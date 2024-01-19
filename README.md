@@ -1,1 +1,2 @@
-# Rat7m-SPEDER
+# RepL
+Representation Learning (RepL) Methods in Reinforcement Learning and Causal Inference

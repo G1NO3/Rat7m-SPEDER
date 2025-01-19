@@ -18,7 +18,7 @@ def load_rat7m():
   state_dim = 60
   action_dim = 60
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, 'cuda:0')
-  replay_buffer_path = f'../../rat7m/replay_buffer_20body_normalized_new.pth'
+  replay_buffer_path = f'./data/replay_buffer_20body_normalized_new.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
   return replay_buffer, state_dim, action_dim

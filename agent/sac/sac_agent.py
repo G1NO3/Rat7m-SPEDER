@@ -28,6 +28,7 @@ class SACAgent(object):
 			alpha=0.1,
 			auto_entropy_tuning=True,
 			hidden_dim=1024,
+			device='cuda:0'
 			):
 
 		self.steps = 0

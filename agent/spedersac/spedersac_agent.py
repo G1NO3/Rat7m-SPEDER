@@ -2,20 +2,37 @@ import copy
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-from torch.distributions import Normal, MultivariateNormal
+from torch.distributions import Normal, MultivariateNormal, SigmoidTransform, AffineTransform, TransformedDistribution
+from torch import distributions as pyd
 import os
 
 # from utils.util import unpack_batch, RunningMeanStd
 from utils.util import unpack_batch
 from utils.util import MLP
 
-from agent.sac.sac_agent import SACAgent
+from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor
-
 from torchinfo import summary
+import numpy as np
+
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class truncated_normal(pyd.transformed_distribution.TransformedDistribution):
+    def __init__(self, mean, std, low, high):
+        self.mean = mean
+        self.std = std
+        self.low = low
+        self.high = high
+        self.normal_dist = Normal(mean, std)
+        # Transform the standard normal into a truncated range
+        # SigmoidTransform maps (-inf, inf) -> (0, 1)
+        # AffineTransform scales (0, 1) -> (low, high)
+        self.trunc_transform = torch.distributions.transforms.ComposeTransform([
+            SigmoidTransform(),  # Maps to (0, 1)
+            AffineTransform(loc=low, scale=high - low)  # Maps (0, 1) -> (low, high)
+        ])
+        super().__init__(self.normal_dist, self.trunc_transform)
 
 
 class RFFCritic(nn.Module):
@@ -94,7 +111,7 @@ class Theta(nn.Module):
         return r
 
 
-class SPEDERSACAgent(SACAgent):
+class SPEDERSACAgent():
     """
     SAC with VAE learned latent features
     """
@@ -122,26 +139,40 @@ class SPEDERSACAgent(SACAgent):
             feature_dim=2048,  # latent feature dim
             use_feature_target=True,
             extra_feature_steps=1,
+            device='cuda:0',
+            state_task_dataset=None,
     ):
 
-        super().__init__(
-            state_dim=state_dim,
-            action_dim=action_dim,
-            action_space=action_space,
-            tau=tau,
-            alpha=alpha,
-            discount=discount,
-            target_update_period=target_update_period,
-            auto_entropy_tuning=auto_entropy_tuning,
-            hidden_dim=hidden_dim,
-        )
+        # super().__init__(
+        #     state_dim=state_dim,
+        #     action_dim=action_dim,
+        #     action_space=action_space,
+        #     tau=tau,
+        #     alpha=alpha,
+        #     discount=discount,
+        #     target_update_period=target_update_period,
+        #     auto_entropy_tuning=auto_entropy_tuning,
+        #     hidden_dim=hidden_dim,
+        #     device=device
+        # )
 
+        # state_dataset = state_task_dataset[:, :state_dim]
+        # mean, std = state_dataset.mean(0), state_dataset.std(0)
+        # low, high = state_dataset.min(0)[0], state_dataset.max(0)
+        # self.low, self.high = low, high
+        # self.obs_dist = pyd.Uniform(low=torch.FloatTensor(low).to(device), high=torch.FloatTensor(high).to(device))
 
+        self.state_dim = state_dim
+        self.action_dim = action_dim
         self.feature_dim = feature_dim
         self.feature_tau = feature_tau
         self.use_feature_target = use_feature_target
         self.extra_feature_steps = extra_feature_steps
-
+        self.discount = discount
+        self.device = device
+        self.log_alpha = torch.tensor(np.log(alpha)).to(self.device)
+        self.log_alpha.requires_grad = True
+        self.steps = 0
         self.phi = MLP(input_dim=state_dim + action_dim,
                        output_dim=feature_dim,
                        hidden_dim=phi_hidden_dim,
@@ -158,9 +189,8 @@ class SPEDERSACAgent(SACAgent):
         self.theta = Theta(feature_dim=feature_dim).to(device)
 
         self.feature_optimizer = torch.optim.Adam(
-            list(self.phi.parameters()) + list(self.mu.parameters()) + list(self.theta.parameters()),
+            list(self.phi.parameters()) + list(self.mu.parameters()),
             weight_decay=0, lr=phi_and_mu_lr)
-
         self.actor = DiagGaussianActor(
             obs_dim=state_dim,
             action_dim=action_dim,
@@ -168,14 +198,15 @@ class SPEDERSACAgent(SACAgent):
             hidden_depth=2,
             log_std_bounds=[-5., 2.],
         ).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(),
+        self.critic = RFFCritic(feature_dim=feature_dim, hidden_dim=critic_and_actor_hidden_dim).to(device)
+        self.critic_target = copy.deepcopy(self.critic)
+        self.actor_optimizer = torch.optim.Adam(list(self.actor.parameters())+list(self.critic.parameters()),
                                                 weight_decay=0, lr=critic_and_actor_lr,
                                                 betas=[0.9, 0.999])  # lower lr for actor/alpha
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=critic_and_actor_lr, betas=[0.9, 0.999])
 
-        self.critic = RFFCritic(feature_dim=feature_dim, hidden_dim=critic_and_actor_hidden_dim).to(device)
-        self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(),
+
+        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.theta.parameters()),
                                                  weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
 
     def feature_step(self, batch, s_random, a_random, s_prime_random):
@@ -196,17 +227,16 @@ class SPEDERSACAgent(SACAgent):
 
         model_loss_pt1 = -2 * torch.diag(z_phi @ z_mu_next.T)  # check if need to sum
 
-        model_loss_pt2_a = z_phi_random @ z_mu_next_random.T
+        model_loss_pt2_a = z_phi_random @ z_mu_next.T
         model_loss_pt2 = model_loss_pt2_a @ model_loss_pt2_a.T
 
         model_loss_pt1_summed = 1. / torch.numel(model_loss_pt1) * torch.sum(model_loss_pt1)
         model_loss_pt2_summed = 1. / torch.numel(model_loss_pt2) * torch.sum(model_loss_pt2)
 
         model_loss = model_loss_pt1_summed + model_loss_pt2_summed
-        r_loss = 0.5 * F.mse_loss(self.theta(z_phi), reward).mean()
 
-        loss = model_loss + r_loss  # + prob_loss
-
+        loss = model_loss  # + prob_loss
+        # print('model_loss', model_loss)
         self.feature_optimizer.zero_grad()
         loss.backward()
         self.feature_optimizer.step()
@@ -214,7 +244,6 @@ class SPEDERSACAgent(SACAgent):
         return {
             'total_loss': loss.item(),
             'model_loss': model_loss.item(),
-            'r_loss': r_loss.item(),
             # 'prob_loss': prob_loss.item(),
         }
 
@@ -227,7 +256,10 @@ class SPEDERSACAgent(SACAgent):
         Critic update step
         """
         state, action, next_state, reward, done = unpack_batch(batch)
-
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        assert next_state.shape[-1] == self.state_dim
+        assert done.shape[-1] == 1
         with torch.no_grad():
             dist = self.actor(next_state)
             next_action = dist.rsample()
@@ -238,13 +270,14 @@ class SPEDERSACAgent(SACAgent):
 
             next_q1, next_q2 = self.critic_target(z_phi_next)
             next_q = torch.min(next_q1, next_q2) - self.alpha * next_action_log_pi
-            target_q = reward + (1. - done) * self.discount * next_q
+
+        target_q = self.theta(z_phi) + (1 - done) * self.discount * next_q
 
         q1, q2 = self.critic(z_phi)
         q1_loss = F.mse_loss(target_q, q1)
         q2_loss = F.mse_loss(target_q, q2)
         q_loss = q1_loss + q2_loss
-
+        # print('q_loss', q_loss)
         self.critic_optimizer.zero_grad()
         q_loss.backward()
         self.critic_optimizer.step()
@@ -261,6 +294,9 @@ class SPEDERSACAgent(SACAgent):
         Actor update step
         """
         dist = self.actor(batch.state)
+        action_log_pi = dist.log_prob(batch.action).sum(-1, keepdim=True)
+        negll = -action_log_pi.mean()
+
         action = dist.rsample()
         log_prob = dist.log_prob(action).sum(-1, keepdim=True)
 
@@ -271,12 +307,14 @@ class SPEDERSACAgent(SACAgent):
 
         actor_loss = ((self.alpha) * log_prob - q).mean()
 
+        loss = actor_loss + negll
         self.actor_optimizer.zero_grad()
-        actor_loss.backward()
+        loss.backward()
         self.actor_optimizer.step()
 
         info = {'actor_loss': actor_loss.item()}
-
+        # print('actor_loss', actor_loss)
+        # print('negll', negll)
         if self.learnable_temperature:
             self.log_alpha_optimizer.zero_grad()
             alpha_loss = (self.alpha * (-log_prob - self.target_entropy).detach()).mean()
@@ -288,6 +326,22 @@ class SPEDERSACAgent(SACAgent):
 
         return info
 
+
+    def state_dict(self):
+        return {'actor': self.actor.state_dict(),
+				'critic': self.critic.state_dict(),
+				'log_alpha': self.log_alpha,
+				'phi': self.phi.state_dict(),
+				'mu': self.mu.state_dict(),
+                'theta': self.theta.state_dict()}
+    def load_state_dict(self, state_dict):
+        self.actor.load_state_dict(state_dict['actor'])
+        self.critic.load_state_dict(state_dict['critic'])
+        self.log_alpha = state_dict['log_alpha']
+        self.phi.load_state_dict(state_dict['phi'])
+        self.mu.load_state_dict(state_dict['mu'])
+        self.theta.load_state_dict(state_dict['theta'])
+
     def train(self, buffer, batch_size):
         """
         One train step
@@ -295,11 +349,13 @@ class SPEDERSACAgent(SACAgent):
         self.steps += 1
 
         # Feature step
+
         for _ in range(self.extra_feature_steps + 1):
             batch_1 = buffer.sample(batch_size)
             batch_2 = buffer.sample(batch_size)
             s_random, a_random, s_prime_random, _, _ = unpack_batch(batch_2)
-
+            # s_random = st_random[:, :self.state_dim]
+            # s_prime_random = self.obs_dist.sample((batch_size,)).to(self.device)
             feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
             # Update the feature network if needed
@@ -307,19 +363,43 @@ class SPEDERSACAgent(SACAgent):
                 self.update_feature_target()
 
         # Critic step
-        critic_info = self.critic_step(batch_1)
+        # critic_info = self.critic_step(batch_1)
 
         # Actor and alpha step
-        actor_info = self.update_actor_and_alpha(batch_1)
+        # actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
-        self.update_target()
+        # self.update_target()
 
         return {
             **feature_info,
-            **critic_info,
-            **actor_info,
+            # **critic_info,
+            # **actor_info,
         }
+    
+    def log_likelihood(self, state, action, next_state, kde=False):
+        # output the device
+        with torch.no_grad():
+            state = state.to(self.device)
+            action = action.to(self.device)
+            next_state = next_state.to(self.device)
+            z_phi = self.phi(torch.concat([state, action], -1))
+            z_mu_next = self.mu(next_state)
+            # next_state_p0 = self.obs_dist.log_prob(next_state).sum(-1, keepdim=True).exp()
+            # print('next_state_p0', next_state_p0.mean(0))
+            # if kde == False:
+            #     next_state_gaussian_aux = 1/torch.sqrt(2*torch.tensor([torch.pi])) * torch.exp(-0.5*next_state**2)
+            #     next_state_gaussian = torch.prod(next_state_gaussian_aux, dim=-1)  
+            # else:
+            #     pass #TODO
+            # print(z_phi)
+            # print(z_mu_next)
+            # print(next_state)
+            # print(next_state_gaussian)
+            # print(torch.sum(z_phi*z_mu_next, dim=-1))
+            likelihood = torch.sum(z_phi*z_mu_next, dim=-1)
+            # print(likelihood)
+        return likelihood.mean()
 
 
 

@@ -51,7 +51,7 @@ def IntegratedGradients_attr(args, dataset, agent):
     sa_ar.requires_grad = True
     for j in range(agent.feature_dim):
       attr_ig, delta = ig.attribute(sa_ar, target=j, return_convergence_delta=True, 
-                      baselines=torch.cat([state_min, action_min], dim=0).to('cuda:0'))
+                      baselines=-1)
       ig_matrix_all[i][j] = attr_ig.mean(dim=0).detach().cpu()
       ig_std_matrix_all[i][j] = attr_ig.std(dim=0).detach().cpu()
     # use local gradients
@@ -74,6 +74,8 @@ def IntegratedGradients_attr(args, dataset, agent):
   print(agent.state_dim, len(np.arange(0,agent.state_dim,3)))
   ig_matrix = ig_matrix_all.mean(dim=0)
   ig_std_matrix = ig_std_matrix_all.mean(dim=0)
+  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_matrix.npy', ig_matrix)
+  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_std_matrix.npy', ig_std_matrix)
   ax[0].imshow(ig_matrix[:,:agent.state_dim], cmap='coolwarm', aspect='auto')
   ax[0].set_title('state', fontsize=30)
   ax[0].set_xticks(np.arange(0,agent.state_dim,3), state_name, rotation=45)
@@ -89,7 +91,7 @@ def IntegratedGradients_attr(args, dataset, agent):
     # ax.plot(attr_ig[i].detach().cpu().numpy())
   # ax.plot(attr_ig.mean(dim=0).detach().cpu().numpy())
   # plt.title('Integrated Gradients')
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/local_g.png'
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
@@ -106,7 +108,7 @@ def IntegratedGradients_attr(args, dataset, agent):
   fig.colorbar(ax[1].images[0], ax=ax[1])
   plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
   plt.tight_layout()
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/local_g_std.png'
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_std.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
@@ -121,13 +123,19 @@ def IntegratedGradients_attr(args, dataset, agent):
     axes[2*i+1].set_xticks(np.arange(0,agent.action_dim,3), action_name, rotation=45)
     axes[2*i].set_title(f'F{i} state')
     axes[2*i+1].set_title(f'F{i} action')
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/local_g_line.png'
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_line.png'
   plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
   plt.tight_layout()
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
   print(save_path)
+  # local_g_matrix = np.load(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/local_g_matrix.npy')
+  # local_g_std_matrix = np.load(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/local_g_std_matrix.npy')
+  # corr_g = np.corrcoef(local_g_matrix.flatten(), ig_matrix.flatten())
+  # corr_g_std = np.corrcoef(local_g_std_matrix.flatten(), ig_std_matrix.flatten())
+  # print('corr g:', corr_g)
+  # print('corr g std:', corr_g_std)
 
 
 
@@ -272,7 +280,7 @@ if __name__ == "__main__":
   parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--extra_feature_steps", default=3, type=int)
   parser.add_argument("--ckpt_n", default=0, type=int)
-  parser.add_argument("--times", default=100, type=int)
+  parser.add_argument("--times", default=3, type=int)
   args = parser.parse_args()
 
 
@@ -304,13 +312,13 @@ if __name__ == "__main__":
   kwargs['state_task_dataset'] = replay_buffer.state
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
-  agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
-  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
-  print('positive likelihood:', posll, posstd)
-  print('negative likelihood:', negll, negstd)
+  # agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
+  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # print('positive likelihood:', posll, posstd)
+  # print('negative likelihood:', negll, negstd)
   # optimize_input(args, agent)
   # cluster_in_phi_space(args, replay_buffer, agent)
-  # IntegratedGradients_attr(args, replay_buffer, agent)
+  IntegratedGradients_attr(args, replay_buffer, agent)
 
 
 

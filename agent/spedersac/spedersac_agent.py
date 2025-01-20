@@ -141,6 +141,7 @@ class SPEDERSACAgent():
             extra_feature_steps=1,
             device='cuda:0',
             state_task_dataset=None,
+            lasso_coef=1e-3,
     ):
 
         # super().__init__(
@@ -173,6 +174,7 @@ class SPEDERSACAgent():
         self.log_alpha = torch.tensor(np.log(alpha)).to(self.device)
         self.log_alpha.requires_grad = True
         self.steps = 0
+        self.lasso_coef = lasso_coef
         self.phi = MLP(input_dim=state_dim + action_dim,
                        output_dim=feature_dim,
                        hidden_dim=phi_hidden_dim,
@@ -235,7 +237,12 @@ class SPEDERSACAgent():
 
         model_loss = model_loss_pt1_summed + model_loss_pt2_summed
 
-        loss = model_loss  # + prob_loss
+
+        W = self.phi.trunk[0].weight
+        group_lasso = torch.norm(W, p=2, dim=0).sum()
+        # print('W', W.shape)
+
+        loss = model_loss + group_lasso * self.lasso_coef
         # print('model_loss', model_loss)
         self.feature_optimizer.zero_grad()
         loss.backward()

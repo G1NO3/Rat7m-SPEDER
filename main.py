@@ -42,7 +42,7 @@ if __name__ == "__main__":
   parser.add_argument("--env", default="HalfCheetah-v4")          # Environment name
   parser.add_argument("--seed", default=0, type=int)              # Sets Gym, PyTorch and Numpy seeds
   parser.add_argument("--eval_freq", default=5e3, type=int)       # How often (time steps) we evaluate
-  parser.add_argument("--max_timesteps", default=1e6, type=float)   # Max time steps to run environment
+  parser.add_argument("--max_timesteps", default=1e6, type=int)   # Max time steps to run environment
   parser.add_argument("--expl_noise", default=0.1)                # Std of Gaussian exploration noise
   parser.add_argument("--batch_size", default=256, type=int)      # Batch size for both actor and critic
   parser.add_argument("--hidden_dim", default=256, type=int)      # Network hidden dims
@@ -52,6 +52,7 @@ if __name__ == "__main__":
   parser.add_argument("--learn_bonus", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--extra_feature_steps", default=3, type=int)
+  parser.add_argument("--lasso_coef", default=1e-3, type=float)
   args = parser.parse_args()
 
   if args.alg == 'mulvdrq':
@@ -122,10 +123,11 @@ if __name__ == "__main__":
     kwargs['critic_and_actor_hidden_dim'] = 256
     kwargs['feature_dim'] = args.feature_dim
     kwargs['state_task_dataset'] = replay_buffer.state
+    kwargs['lasso_coef'] = args.lasso_coef
     agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
-
+  # agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
 
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]

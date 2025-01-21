@@ -53,6 +53,8 @@ if __name__ == "__main__":
   parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--extra_feature_steps", default=3, type=int)
   parser.add_argument("--lasso_coef", default=1e-3, type=float)
+  parser.add_argument("--feature_lr", default=1e-3, type=float)
+  parser.add_argument("--policy_lr", default=3e-4, type=float)
   args = parser.parse_args()
 
   if args.alg == 'mulvdrq':
@@ -114,12 +116,12 @@ if __name__ == "__main__":
     agent = diffsrsac_agent.DIFFSRSACAgent(**kwargs)
   elif args.alg == 'spedersac':
     kwargs['extra_feature_steps'] = 5
-    kwargs['phi_and_mu_lr'] = 0.0001
+    kwargs['phi_and_mu_lr'] = args.feature_lr
     kwargs['phi_hidden_dim'] = 512
     kwargs['phi_hidden_depth'] = 1
     kwargs['mu_hidden_dim'] = 512
     kwargs['mu_hidden_depth'] = 0
-    kwargs['critic_and_actor_lr'] = 0.0003
+    kwargs['critic_and_actor_lr'] = args.policy_lr
     kwargs['critic_and_actor_hidden_dim'] = 256
     kwargs['feature_dim'] = args.feature_dim
     kwargs['state_task_dataset'] = replay_buffer.state

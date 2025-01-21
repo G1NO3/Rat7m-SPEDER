@@ -312,12 +312,15 @@ if __name__ == "__main__":
   kwargs['state_task_dataset'] = replay_buffer.state
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
-  # agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
-  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
-  # print('positive likelihood:', posll, posstd)
-  # print('negative likelihood:', negll, negstd)
+  agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
+
+  args.times = 100
+  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  print('positive likelihood:', posll, posstd)
+  print('negative likelihood:', negll, negstd)
   # optimize_input(args, agent)
   # cluster_in_phi_space(args, replay_buffer, agent)
+  args.times = 3
   IntegratedGradients_attr(args, replay_buffer, agent)
 
 

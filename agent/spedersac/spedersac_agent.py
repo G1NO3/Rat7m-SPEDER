@@ -251,6 +251,7 @@ class SPEDERSACAgent():
         return {
             'total_loss': loss.item(),
             'model_loss': model_loss.item(),
+            'group_lasso': group_lasso.item(),
             # 'prob_loss': prob_loss.item(),
         }
 

@@ -1,10 +1,10 @@
 python main.py --alg spedersac --env rat7m --feature_dim 64 \
-                --max_timesteps 1000000 --dir dim64_sa_sp_buffer_20body_normalized_lr1e-4_lasso1e-3\
-                --eval_freq 500 --discount 0.9 --batch_size 256 --lasso_coef 0.001
+                --max_timesteps 1000000 --dir dim64_sa_sp_buffer_20body_normalized_lr1e-4_lasso1e-2\
+                --eval_freq 500 --discount 0.9 --batch_size 256 --lasso_coef 0.01
 
 # python visualize.py --alg spedersac --env rat7m --feature_dim 64 \
-#                 --max_timesteps 1000000 --dir dim64_sa_sp_buffer_20body_normalized --start_timesteps 20000\
-#                 --eval_freq 500 --discount 0.9 --batch_size 128 --times 3
+#                 --max_timesteps 1000000 --dir dim64_sa_sp_buffer_20body_normalized_lr1e-4_lasso1e-3 --start_timesteps 20000\
+#                 --eval_freq 500 --discount 0.9 --batch_size 128 --times 100
 # for i in 64 96 128
 # do  
     # echo "Running with feature dim: $i"

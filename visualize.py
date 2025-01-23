@@ -26,6 +26,99 @@ from captum.attr import IntegratedGradients
 from captum.attr import Saliency
 from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
+# def center_embedding(n):
+#     """
+#     Generates a matrix ``Gamma`` that maps from a (n-1)-dimensional
+#     vector space  to the space of k-tuples with zero mean
+
+#     Parameters
+#     ----------
+#     n : int
+#         Number of keypoints.
+
+#     Returns
+#     -------
+#     Gamma: jax array of shape (n, n - 1)
+#         Matrix to map to centered embedded space.
+#     """
+#     X = np.tril(np.ones((n, n)), k=-1)[1:]
+#     X = np.eye(n)[1:] - X / X.sum(1)[:, None]
+#     X = X / np.sqrt((X**2).sum(1))[:, None]
+#     return X.T
+# def plot_skeleton(ax, coordinates, edges):
+#   n_bodyparts = coordinates.shape[0]
+#   d = coordinates.shape[1]
+
+#   if keypoint_colors is None:
+#       cmap = plt.cm.get_cmap(keypoint_colormap)
+#       keypoint_colors = cmap(np.linspace(0, 1, n_bodyparts))
+
+#   Gamma = np.array(center_embedding(n_bodyparts))
+#   plot_n_pcs = 2
+
+#   magnitude = np.sqrt((pca.mean_**2).mean()) * scale
+#   ymean = Gamma @ pca.mean_.reshape(k - 1, d)
+#   ypcs = (pca.mean_ + magnitude * pca.components_).reshape(-1, k - 1, d)
+#   ypcs = Gamma[np.newaxis] @ ypcs[:plot_n_pcs]
+
+#   if d == 2:
+#       dims_list, names = [[0, 1]], ["xy"]
+#   if d == 3:
+#       dims_list, names = [[0, 1], [0, 2]], ["xy", "xz"]
+
+#   for dims, name in zip(dims_list, names):
+#       nrows = int(np.ceil(plot_n_pcs / ncols))
+#       fig, axs = plt.subplots(nrows, ncols, sharex=True, sharey=True)
+#       for i, ax in enumerate(axs.flat):
+#           if i >= plot_n_pcs:
+#               ax.axis("off")
+#               continue
+
+#           for e in edges:
+#               ax.plot(
+#                   *ymean[:, dims][e].T,
+#                   color=keypoint_colors[e[0]],
+#                   zorder=0,
+#                   alpha=0.25,
+#                   linewidth=line_width,
+#               )
+#               ax.plot(
+#                   *ypcs[i][:, dims][e].T,
+#                   color="k",
+#                   zorder=2,
+#                   linewidth=line_width + 0.2,
+#               )
+#               ax.plot(
+#                   *ypcs[i][:, dims][e].T,
+#                   color=keypoint_colors[e[0]],
+#                   zorder=3,
+#                   linewidth=line_width,
+#               )
+
+#           ax.scatter(
+#               *ymean[:, dims].T,
+#               c=keypoint_colors,
+#               s=node_size,
+#               zorder=1,
+#               alpha=0.25,
+#               linewidth=0,
+#           )
+#           ax.scatter(
+#               *ypcs[i][:, dims].T,
+#               c=keypoint_colors,
+#               s=node_size,
+#               zorder=4,
+#               edgecolor="k",
+#               linewidth=0.2,
+#           )
+
+#           ax.set_title(f"PC {i+1}", fontsize=10)
+#           ax.set_aspect("equal")
+#           ax.axis("off")
+
+#       fig.set_size_inches((axis_size[0] * ncols, axis_size[1] * nrows))
+#       plt.tight_layout()
+
 
 def IntegratedGradients_attr(args, dataset, agent):
   model = agent.phi
@@ -70,6 +163,7 @@ def IntegratedGradients_attr(args, dataset, agent):
   state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM','SpineL','Offset1',\
               'Offset2','HipL','HipR','ElbowL','ArmL','ShoulderL','ShoulderR',
               'ElbowR','ArmR','KneeR','KneeL','ShinL','ShinR']
+              
   action_name = state_name
   print(agent.state_dim, len(np.arange(0,agent.state_dim,3)))
   ig_matrix = ig_matrix_all.mean(dim=0)
@@ -97,6 +191,7 @@ def IntegratedGradients_attr(args, dataset, agent):
   plt.savefig(save_path)
   plt.close()
   print(save_path)
+  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_matrix.npy', ig_matrix)
   fig, ax = plt.subplots(1,2, figsize=(20, 10))
   ax[0].imshow(ig_std_matrix[:,:agent.state_dim], cmap='coolwarm', aspect='auto')
   ax[0].set_title('state', fontsize=30)
@@ -136,8 +231,45 @@ def IntegratedGradients_attr(args, dataset, agent):
   # corr_g_std = np.corrcoef(local_g_std_matrix.flatten(), ig_std_matrix.flatten())
   # print('corr g:', corr_g)
   # print('corr g std:', corr_g_std)
+  n_bodyparts = agent.state_dim // 3
+  ig_matrix_agg_xyz = ig_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
+  ig_std_matrix_agg_xyz = ig_std_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
+  fig, axes = plt.subplots(1,2, figsize=(20,10))
+  axes[0].imshow(ig_matrix_agg_xyz[:,:n_bodyparts], cmap='coolwarm', aspect='auto')
+  axes[0].set_title('state', fontsize=30)
+  axes[0].set_xticks(np.arange(0,n_bodyparts), state_name, rotation=45)
+  axes[1].imshow(ig_matrix_agg_xyz[:,n_bodyparts:], cmap='coolwarm', aspect='auto')
+  axes[1].set_title('action', fontsize=30)
+  axes[1].set_xticks(np.arange(0,n_bodyparts), state_name, rotation=45)
+  fig.colorbar(axes[0].images[0], ax=axes[0])
+  fig.colorbar(axes[1].images[0], ax=axes[1])
+  plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
+  plt.tight_layout()
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_agg.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_matrix_agg.npy', ig_matrix_agg_xyz)
+  # corr = np.corrcoef(ig_matrix_agg_xyz.flatten(), ig_matrix.flatten())
+  # print('corr:', corr)
+  fig, axes = plt.subplots(16,8, figsize=(90,50))
+  axes = axes.flatten()
 
-
+  for i in range(agent.feature_dim):
+    axes[2*i].plot(ig_matrix_agg_xyz[i,:n_bodyparts].detach().cpu().numpy())
+    axes[2*i].set_xticks(np.arange(0,n_bodyparts), state_name[:n_bodyparts], rotation=45)
+    axes[2*i+1].plot(ig_matrix_agg_xyz[i,n_bodyparts:].detach().cpu().numpy())
+    axes[2*i+1].set_xticks(np.arange(0,n_bodyparts), state_name[n_bodyparts:], rotation=45)
+    axes[2*i].set_title(f'F{i} state')
+    axes[2*i+1].set_title(f'F{i} action')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_line_agg.png'
+  plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
+  plt.tight_layout()
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
 
 
 
@@ -313,7 +445,7 @@ if __name__ == "__main__":
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
-
+  print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   args.times = 100
   posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   print('positive likelihood:', posll, posstd)

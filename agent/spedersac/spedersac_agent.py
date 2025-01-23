@@ -175,6 +175,7 @@ class SPEDERSACAgent():
         self.log_alpha.requires_grad = True
         self.steps = 0
         self.lasso_coef = lasso_coef
+        self.phi_hidden_dim = phi_hidden_dim
         self.phi = MLP(input_dim=state_dim + action_dim,
                        output_dim=feature_dim,
                        hidden_dim=phi_hidden_dim,
@@ -239,7 +240,9 @@ class SPEDERSACAgent():
 
 
         W = self.phi.trunk[0].weight
-        group_lasso = torch.norm(W, p=2, dim=0).sum()
+        assert W.shape == (self.phi_hidden_dim, self.state_dim + self.action_dim)
+        group_by_coordinate_W = W.reshape(self.phi_hidden_dim, (self.state_dim + self.action_dim)//3, 3)
+        group_lasso = torch.sqrt(group_by_coordinate_W.pow(2).sum(-1).sum(0)).sum()
         # print('W', W.shape)
 
         loss = model_loss + group_lasso * self.lasso_coef

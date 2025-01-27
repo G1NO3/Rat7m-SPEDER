@@ -8,7 +8,7 @@ from torch.nn import functional as F
 
 
 def unpack_batch(batch):
-  return batch.state, batch.action, batch.next_state, batch.reward, batch.done
+  return batch.state, batch.action, batch.next_state, batch.reward, batch.done, batch.task, batch.next_task
 
 
 class Timer:

@@ -26,106 +26,157 @@ from captum.attr import IntegratedGradients
 from captum.attr import Saliency
 from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
-# def center_embedding(n):
-#     """
-#     Generates a matrix ``Gamma`` that maps from a (n-1)-dimensional
-#     vector space  to the space of k-tuples with zero mean
 
-#     Parameters
-#     ----------
-#     n : int
-#         Number of keypoints.
+def visualize_wu(args, dataset, agent):
+  plt.rcParams.update({'font.size': 15})
+  n_task = agent.n_task
+  z_w = agent.w(torch.eye(n_task).to('cuda:0')).detach().cpu().numpy()
+  u1, u2 = agent.critic(torch.eye(n_task).to('cuda:0'))
+  z_u1 = u1.detach().cpu().numpy()
+  z_u2 = u2.detach().cpu().numpy()
+  print('w:{}'.format(z_w.shape))
+  print(z_w)
+  fig, axes = plt.subplots(3,1, figsize=(30,20))
+  axes[0].imshow(z_w, cmap='coolwarm', aspect='auto')
+  axes[0].set_title('w')
+  axes[1].imshow(z_u1, cmap='coolwarm', aspect='auto')
+  axes[1].set_title('u1')
+  axes[2].imshow(z_u2, cmap='coolwarm', aspect='auto')
+  axes[2].set_title('u2')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/wu.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  fig, axes = plt.subplots(1,1, figsize=(10,10))
+  axes.plot(z_w.T)
+  axes.set_title('w')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/w.png'
+  plt.savefig(save_path)
+  fig, axes = plt.subplots(1,1, figsize=(10,10))
+  axes.plot(z_u1.T)
+  axes.set_title('u1')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u1.png'
+  plt.savefig(save_path)
 
-#     Returns
-#     -------
-#     Gamma: jax array of shape (n, n - 1)
-#         Matrix to map to centered embedded space.
-#     """
-#     X = np.tril(np.ones((n, n)), k=-1)[1:]
-#     X = np.eye(n)[1:] - X / X.sum(1)[:, None]
-#     X = X / np.sqrt((X**2).sum(1))[:, None]
-#     return X.T
-# def plot_skeleton(ax, coordinates, edges):
-#   n_bodyparts = coordinates.shape[0]
-#   d = coordinates.shape[1]
+def get_edges():
+  state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
+                'SpineL','HipL','HipR','ElbowL','ArmL',
+                'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
+                'KneeL','ShinL','ShinR']
 
-#   if keypoint_colors is None:
-#       cmap = plt.cm.get_cmap(keypoint_colormap)
-#       keypoint_colors = cmap(np.linspace(0, 1, n_bodyparts))
+  skeleton = [('HeadF', 'HeadB'), ('HeadF', 'HeadL'), ('HeadB', 'HeadL'),
+              ('HeadB', 'SpineF'), ('HeadL', 'SpineF'), ('SpineF', 'SpineM'),
+              ('SpineM', 'SpineL'), ('SpineF', 'ShoulderL'), ('ShoulderL', 'ElbowL'),
+              ('ElbowL', 'ArmL'), ('SpineF', 'ShoulderR'), ('ShoulderR', 'ElbowR'),
+              ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
+              ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
+              ('KneeR', 'ShinR')]
+  edges = []
+  for i in skeleton:
+    edges.append((state_name.index(i[0]), state_name.index(i[1])))
+  return edges
 
-#   Gamma = np.array(center_embedding(n_bodyparts))
-#   plot_n_pcs = 2
+def PCA_IG_skeleton(args, dataset, agent):
+  # ig_matrix: [feature_dim, state_dim+action_dim]
+  ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, \
+    state_name, action_name = cal_IG_matrix(args, dataset, agent, 3)
+  print('IG done')
+  n_bodyparts = len(state_name)
+  pca = PCA(n_components=20)
+  assert ig_matrix_agg_xyz.shape == (agent.feature_dim, n_bodyparts*2)
+  print(ig_matrix_agg_xyz.shape)  
+  ig_pca = pca.fit_transform(ig_matrix_agg_xyz.T)
+  # ig_pca = pca.components_
+  print(ig_pca.shape)
+  assert ig_pca.shape == (n_bodyparts*2, 20)
+  fig, ax = plt.subplots(1,1, figsize=(10, 10))
+  ax.plot(pca.explained_variance_ratio_.cumsum())
+  ax.set_title('PCA explained variance ratio')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pca_evr.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_pca.png'
+  plot_IG_skeleton(ig_pca.T, state_name, 20, save_path)
 
-#   magnitude = np.sqrt((pca.mean_**2).mean()) * scale
-#   ymean = Gamma @ pca.mean_.reshape(k - 1, d)
-#   ypcs = (pca.mean_ + magnitude * pca.components_).reshape(-1, k - 1, d)
-#   ypcs = Gamma[np.newaxis] @ ypcs[:plot_n_pcs]
+def draw_IG_skeleton(args, dataset, agent):
+  ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, \
+    state_name, action_name = cal_IG_matrix(args, dataset, agent, 3)
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_skeleton.png'
+  plot_IG_skeleton(ig_matrix_agg_xyz, state_name, agent.feature_dim, save_path)
 
-#   if d == 2:
-#       dims_list, names = [[0, 1]], ["xy"]
-#   if d == 3:
-#       dims_list, names = [[0, 1], [0, 2]], ["xy", "xz"]
+def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
+  # ig_matrix: [feature_dim, state_dim+action_dim]
+  edges = get_edges()
+  col = 10*2
+  row = feature_dim//(col//2) + 1
+  fig, axes = plt.subplots(row, col, figsize=(col*5, row*6))
+  axes = axes.flatten()
+  ymean = np.load('./ymean.npy')
+  dims, name = [0,2], 'xz'
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  n_bodyparts = len(state_name)
+  assert ymean.shape == (n_bodyparts, 3)
+  assert ig_matrix_agg_xyz.shape == (feature_dim, 2*n_bodyparts)
+  for i in range(feature_dim):
+    for e in edges:
+      axes[i*2].plot(
+          *ymean[:, dims][e,:].T,
+          color=keypoint_colors[e[0]],
+          linewidth=5.0,
+          zorder=0)
+      axes[i*2+1].plot(
+          *ymean[:, dims][e,:].T,
+          color=keypoint_colors[e[0]],
+          linewidth=5.0,
+          zorder=0)
+    node_colors = ['blue' if ig_matrix_agg_xyz[i, j] < 0 else 'red' for j in range(2*n_bodyparts)]
+    axes[i*2].scatter(
+          *ymean[:, dims].T,
+          c=node_colors[:n_bodyparts],
+          s=np.abs(ig_matrix_agg_xyz[i, :n_bodyparts])*120,
+          zorder=1)
+    axes[i*2+1].scatter(
+          *ymean[:, dims].T,
+          c=node_colors[n_bodyparts:],
+          s=np.abs(ig_matrix_agg_xyz[i, n_bodyparts:])*120,
+          zorder=1)
 
-#   for dims, name in zip(dims_list, names):
-#       nrows = int(np.ceil(plot_n_pcs / ncols))
-#       fig, axs = plt.subplots(nrows, ncols, sharex=True, sharey=True)
-#       for i, ax in enumerate(axs.flat):
-#           if i >= plot_n_pcs:
-#               ax.axis("off")
-#               continue
+    axes[i*2].set_title(f'F{i} state', fontsize=30)
+    axes[i*2+1].set_title(f'F{i} action', fontsize=30)
+    axes[i*2].axis('off')
+    axes[i*2+1].axis('off')
+  plt.tight_layout()
+  # plt.show()
+  if save_path is not None:
+    if not os.path.exists(os.path.dirname(save_path)):
+      os.makedirs(os.path.dirname(save_path))
+    plt.savefig(save_path)
+    print(save_path)
+  return
 
-#           for e in edges:
-#               ax.plot(
-#                   *ymean[:, dims][e].T,
-#                   color=keypoint_colors[e[0]],
-#                   zorder=0,
-#                   alpha=0.25,
-#                   linewidth=line_width,
-#               )
-#               ax.plot(
-#                   *ypcs[i][:, dims][e].T,
-#                   color="k",
-#                   zorder=2,
-#                   linewidth=line_width + 0.2,
-#               )
-#               ax.plot(
-#                   *ypcs[i][:, dims][e].T,
-#                   color=keypoint_colors[e[0]],
-#                   zorder=3,
-#                   linewidth=line_width,
-#               )
+def cal_IG_matrix(args, dataset, agent, times):
+  state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
+                'SpineL','HipL','HipR','ElbowL','ArmL',
+                'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
+                'KneeL','ShinL','ShinR']
+  action_name = state_name
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
+  if os.path.exists(f'{save_path}/ig_matrix.npy'):
+    ig_matrix = np.load(f'{save_path}/ig_matrix.npy')
+    ig_std_matrix = np.load(f'{save_path}/ig_std_matrix.npy')
+    ig_matrix_agg_xyz = np.load(f'{save_path}/ig_matrix_agg.npy')
+    ig_std_matrix_agg_xyz = np.load(f'{save_path}/ig_std_matrix_agg.npy')
+    return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, state_name, action_name
 
-#           ax.scatter(
-#               *ymean[:, dims].T,
-#               c=keypoint_colors,
-#               s=node_size,
-#               zorder=1,
-#               alpha=0.25,
-#               linewidth=0,
-#           )
-#           ax.scatter(
-#               *ypcs[i][:, dims].T,
-#               c=keypoint_colors,
-#               s=node_size,
-#               zorder=4,
-#               edgecolor="k",
-#               linewidth=0.2,
-#           )
-
-#           ax.set_title(f"PC {i+1}", fontsize=10)
-#           ax.set_aspect("equal")
-#           ax.axis("off")
-
-#       fig.set_size_inches((axis_size[0] * ncols, axis_size[1] * nrows))
-#       plt.tight_layout()
-
-
-def IntegratedGradients_attr(args, dataset, agent):
   model = agent.phi
   ig = IntegratedGradients(model)
   # sa_ar = torch.zeros((args.times, args.batch_size, agent.state_dim+agent.action_dim))
-  ig_matrix_all = torch.zeros((args.times, agent.feature_dim, agent.state_dim+agent.action_dim))
-  ig_std_matrix_all = torch.zeros((args.times, agent.feature_dim, agent.state_dim+agent.action_dim))
+  ig_matrix_all = torch.zeros((times, agent.feature_dim, agent.state_dim+agent.action_dim))
+  ig_std_matrix_all = torch.zeros((times, agent.feature_dim, agent.state_dim+agent.action_dim))
   state_dataset = dataset.state
   action_dataset = dataset.action
   print(state_dataset.shape)
@@ -137,7 +188,7 @@ def IntegratedGradients_attr(args, dataset, agent):
   print(action_min)
   action_max = action_dataset.max(0)
   print(action_max)
-  for i in range(0, args.times):
+  for i in range(0, times):
     batch = dataset.sample(args.batch_size)
     state, action, next_state, reward, done = unpack_batch(batch)
     sa_ar = torch.cat([state, action], dim=1).to('cuda:0')
@@ -158,18 +209,29 @@ def IntegratedGradients_attr(args, dataset, agent):
     #   sa_ar.grad.zero_()
   # attr_ig, delta = ig.attribute(sa_ar_flatten, target=0, return_convergence_delta=True)
   # print(attr_ig.shape)
-  fig, ax = plt.subplots(1,2, figsize=(20, 10))
   # sns.heatmap(ig_matrix, cmap='coolwarm', ax=ax)
-  state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM','SpineL','Offset1',\
-              'Offset2','HipL','HipR','ElbowL','ArmL','ShoulderL','ShoulderR',
-              'ElbowR','ArmR','KneeR','KneeL','ShinL','ShinR']
-              
-  action_name = state_name
+  if not os.path.exists(save_path):
+    os.makedirs(save_path)
   print(agent.state_dim, len(np.arange(0,agent.state_dim,3)))
   ig_matrix = ig_matrix_all.mean(dim=0)
   ig_std_matrix = ig_std_matrix_all.mean(dim=0)
-  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_matrix.npy', ig_matrix)
-  np.save(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_std_matrix.npy', ig_std_matrix)
+  np.save(f'{save_path}/ig_matrix.npy', ig_matrix)
+  np.save(f'{save_path}/ig_std_matrix.npy', ig_std_matrix)
+  ig_matrix_agg_xyz = ig_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
+  ig_std_matrix_agg_xyz = ig_std_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
+  ig_matrix = ig_matrix.detach().cpu().numpy()
+  ig_std_matrix = ig_std_matrix.detach().cpu().numpy()
+  ig_matrix_agg_xyz = ig_matrix_agg_xyz.detach().cpu().numpy()
+  ig_std_matrix_agg_xyz = ig_std_matrix_agg_xyz.detach().cpu().numpy()
+  np.save(f'{save_path}/ig_matrix_agg.npy', ig_matrix_agg_xyz)
+  np.save(f'{save_path}/ig_std_matrix_agg.npy', ig_std_matrix_agg_xyz)
+  return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, state_name, action_name
+
+def IntegratedGradients_attr(args, dataset, agent):
+  fig, ax = plt.subplots(1,2, figsize=(20, 10))
+  ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, \
+    state_name, action_name = cal_IG_matrix(args, dataset, agent)
+
   ax[0].imshow(ig_matrix[:,:agent.state_dim], cmap='coolwarm', aspect='auto')
   ax[0].set_title('state', fontsize=30)
   ax[0].set_xticks(np.arange(0,agent.state_dim,3), state_name, rotation=45)
@@ -212,9 +274,9 @@ def IntegratedGradients_attr(args, dataset, agent):
   fig, ax = plt.subplots(16,8, figsize=(90,50))
   axes = ax.flatten()
   for i in range(agent.feature_dim):
-    axes[2*i].plot(ig_matrix[i,:agent.state_dim].detach().cpu().numpy())
+    axes[2*i].plot(ig_matrix[i,:agent.state_dim])
     axes[2*i].set_xticks(np.arange(0,agent.state_dim,3), state_name, rotation=45)
-    axes[2*i+1].plot(ig_matrix[i,agent.state_dim:].detach().cpu().numpy())
+    axes[2*i+1].plot(ig_matrix[i,agent.state_dim:])
     axes[2*i+1].set_xticks(np.arange(0,agent.action_dim,3), action_name, rotation=45)
     axes[2*i].set_title(f'F{i} state')
     axes[2*i+1].set_title(f'F{i} action')
@@ -232,8 +294,6 @@ def IntegratedGradients_attr(args, dataset, agent):
   # print('corr g:', corr_g)
   # print('corr g std:', corr_g_std)
   n_bodyparts = agent.state_dim // 3
-  ig_matrix_agg_xyz = ig_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
-  ig_std_matrix_agg_xyz = ig_std_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
   fig, axes = plt.subplots(1,2, figsize=(20,10))
   axes[0].imshow(ig_matrix_agg_xyz[:,:n_bodyparts], cmap='coolwarm', aspect='auto')
   axes[0].set_title('state', fontsize=30)
@@ -257,9 +317,9 @@ def IntegratedGradients_attr(args, dataset, agent):
   axes = axes.flatten()
 
   for i in range(agent.feature_dim):
-    axes[2*i].plot(ig_matrix_agg_xyz[i,:n_bodyparts].detach().cpu().numpy())
+    axes[2*i].plot(ig_matrix_agg_xyz[i,:n_bodyparts])
     axes[2*i].set_xticks(np.arange(0,n_bodyparts), state_name[:n_bodyparts], rotation=45)
-    axes[2*i+1].plot(ig_matrix_agg_xyz[i,n_bodyparts:].detach().cpu().numpy())
+    axes[2*i+1].plot(ig_matrix_agg_xyz[i,n_bodyparts:])
     axes[2*i+1].set_xticks(np.arange(0,n_bodyparts), state_name[n_bodyparts:], rotation=45)
     axes[2*i].set_title(f'F{i} state')
     axes[2*i+1].set_title(f'F{i} action')
@@ -381,11 +441,11 @@ def test_logll(args, dataset, agent):
   ax.hist(negative_ll.cpu().numpy(), bins=20, density=True, alpha=0.6, color='g')
   plt.legend(['positive sample', 'negative sample'])
   plt.title('likelihood, p={:.4f}'.format(p_value))
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ll.png'
-  if not os.path.exists(os.path.dirname(save_path)):
-    os.makedirs(os.path.dirname(save_path))
-  plt.savefig(save_path)
-  print(save_path)
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
+  if not os.path.exists(save_path):
+    os.makedirs(save_path)
+  plt.savefig(f'{save_path}/ll.png')
+  print(f'{save_path}/ll.png')
   return positive_ll.mean(), positive_ll.std(), negative_ll.mean(), negative_ll.std()
 
 
@@ -416,7 +476,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim = load_rat7m()
+  replay_buffer, state_dim, action_dim, n_task = load_rat7m()
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
   torch.manual_seed(args.seed)
@@ -437,23 +497,29 @@ if __name__ == "__main__":
   kwargs['phi_hidden_depth'] = 1
   kwargs['mu_hidden_dim'] = 512
   kwargs['mu_hidden_depth'] = 0
-  kwargs['critic_and_actor_lr'] = 0.0003
+  kwargs['critic_and_actor_lr'] = 0.0001
   kwargs['critic_and_actor_hidden_dim'] = 256
   kwargs['feature_dim'] = args.feature_dim
   kwargs['device'] = 'cuda:0'
   kwargs['state_task_dataset'] = replay_buffer.state
+  kwargs['learnable_temperature'] = True
+  kwargs['n_task'] = n_task
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
-  args.times = 100
-  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
-  print('positive likelihood:', posll, posstd)
-  print('negative likelihood:', negll, negstd)
+  # args.times = 100
+  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # print('positive likelihood:', posll, posstd)
+  # print('negative likelihood:', negll, negstd)
   # optimize_input(args, agent)
   # cluster_in_phi_space(args, replay_buffer, agent)
-  args.times = 3
-  IntegratedGradients_attr(args, replay_buffer, agent)
+  # args.times = 3
+  # IntegratedGradients_attr(args, replay_buffer, agent)
+  # get_edges()
+  # draw_IG_skeleton(args, replay_buffer, agent)
+  # PCA_IG_skeleton(args, replay_buffer, agent)
+  visualize_wu(args, replay_buffer, agent)
 
 
 

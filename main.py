@@ -15,13 +15,14 @@ from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
 
 def load_rat7m():
-  state_dim = 60
-  action_dim = 60
+  state_dim = 54
+  action_dim = 54
+  n_task = 60
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, 'cuda:0')
-  replay_buffer_path = f'./data/replay_buffer_20body_normalized_new.pth'
+  replay_buffer_path = f'./data/replay_buffer_18body_normalized_new.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
-  return replay_buffer, state_dim, action_dim
+  return replay_buffer, state_dim, action_dim, n_task
 
 def load_halfcheetah():
   state_dim = 17
@@ -77,7 +78,7 @@ if __name__ == "__main__":
   # setup log 
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
-  replay_buffer, state_dim, action_dim = load_rat7m()
+  replay_buffer, state_dim, action_dim, n_task = load_rat7m()
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):
     os.makedirs(save_path)
@@ -126,10 +127,16 @@ if __name__ == "__main__":
     kwargs['feature_dim'] = args.feature_dim
     kwargs['state_task_dataset'] = replay_buffer.state
     kwargs['lasso_coef'] = args.lasso_coef
+    kwargs['n_task'] = n_task
     agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
-  # agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
+  if args.dir[-5:] == '_fixf':
+    pretrained_dir_name = args.dir[:-5]
+    pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+    agent.load_phi_mu(torch.load(pretrained_model_path))
+    print(f'Model loaded from {pretrained_model_path}')
+    print('Fixed Phi and Mu')
 
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]
@@ -138,7 +145,7 @@ if __name__ == "__main__":
   episode_timesteps = 0
   # episode_num = 0
   timer = util.Timer()
-
+  print('Start training...')
   for t in range(int(args.max_timesteps)):
     
     episode_timesteps += 1

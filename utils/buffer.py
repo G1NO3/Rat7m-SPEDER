@@ -6,7 +6,7 @@ import torch
 
 Batch = collections.namedtuple(
 	'Batch',
-	['state', 'action', 'reward', 'next_state', 'done', 'task', 'next_task']
+	['state', 'action', 'next_state', 'reward', 'done', 'task', 'next_task']
 	)
 
 class ReplayBuffer(object):

@@ -35,6 +35,8 @@ class TanhTransform(pyd.transforms.Transform):
   def _inverse(self, y):
     # We do not clamp to the boundary here as it may degrade the performance of certain algorithms.
     # one should use `cache_size=1` instead
+    eps = 1e-6
+    y = y.clamp(-1 + eps, 1 - eps)
     return self.atanh(y)
 
   def log_abs_det_jacobian(self, x, y):

@@ -4,7 +4,7 @@ import torch
 import gym
 import argparse
 import os, glob
-
+from PIL import Image
 from tensorboardX import SummaryWriter
 
 from utils import util, buffer
@@ -13,7 +13,7 @@ from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
-from main import load_rat7m, load_halfcheetah
+from main import load_rat7m, load_halfcheetah, load_keymoseq
 from utils.util import unpack_batch
 from matplotlib import pyplot as plt
 from scipy.stats import ttest_ind
@@ -27,6 +27,131 @@ from captum.attr import Saliency
 from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
 
+def rollout(args, dataset, agent):
+  syllable = 1
+  timestep = 3
+  while True:
+    sample = dataset.sample(args.batch_size)
+    task = sample.task
+    print(task)
+    all_idx = torch.where(task == syllable)[0]
+    if len(all_idx) > 0:
+      break
+  idx = all_idx[0]
+  state = sample.state[idx]
+  action = sample.action[idx]
+  stateseq = torch.zeros((timestep, *state.shape))
+  actionseq = torch.zeros((timestep, *action.shape))
+  stateseq[0] = state
+  actionseq[0] = action
+  for i in range(1, timestep):
+    state, action, sp_likelihood, ap_q = agent.step(state, syllable, action)
+    print(sp_likelihood, ap_q)
+    stateseq[i] = state
+    actionseq[i] = action
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout.gif'
+  plot_gif(stateseq, save_path)
+  
+def plot_gif(stateseq, save_path):
+  # stateseq: [timestep, state_dim]
+  edges, state_name = get_edges(stateseq.shape[1])
+  fig, axis = plt.subplots(1, 1, figsize=(5, 6))
+  n_bodyparts = len(state_name)
+  n_img = stateseq.shape[0]
+  if stateseq.shape[1] == 54:
+    dims, name = [0,2], 'xz'
+    state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 3)[..., dims]
+  else:
+    dims, name = [0,1], 'xy'
+    state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  rasters = []
+  ymin = state_seq_to_plot[:,:,1].min()
+  ymax = state_seq_to_plot[:,:,1].max()
+  xmin = state_seq_to_plot[:,:,0].min()
+  xmax = state_seq_to_plot[:,:,0].max()
+  for i in range(n_img):
+    axis.clear()
+    for p1, p2 in edges:
+      axis.plot(
+          *state_seq_to_plot[i, (p1, p2)].T,
+          color=keypoint_colors[p1],
+          linewidth=5.0)
+    axis.scatter(
+        *state_seq_to_plot[i].T,
+        c=keypoint_colors,
+        s=100)
+    axis.set_xlim(xmin, xmax)
+    axis.set_ylim(ymin, ymax)
+    
+    rasters.append(rasterize_figure(fig))
+
+  pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
+  # Save the PIL Images as an animated GIF
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  pil_images[0].save(
+      save_path,
+      save_all=True,
+      append_images=pil_images[1:],
+      duration=500,
+      loop=0,
+  )
+  print(save_path)
+
+def rasterize_figure(fig):
+  canvas = fig.canvas
+  canvas.draw()
+  width, height = canvas.get_width_height()
+  raster_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
+  raster = raster_flat.reshape((height, width, 3))
+  return raster
+
+def check_action_space(args, dataset, agent):
+  times = 100
+  logll = np.zeros((times, ))
+  for i in range(times):
+    batch_1 = dataset.sample(args.batch_size)
+    action_test = torch.rand((args.batch_size, agent.action_dim)).to('cuda:0') * 2 - 1
+    logll[i] = agent.action_loglikelihood(batch_1.state, action_test, batch_1.task).detach().cpu().numpy()
+  print(logll)
+  fig, axis = plt.subplots(1,1, figsize=(10,10))
+  axis.hist(logll, bins=20)
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  plt.close()
+
+
+def action_loglikelihood(args, dataset, agent):
+  batch_size = args.batch_size
+  times = 100
+  positive_logll = np.zeros(times)
+  negative_logll = np.zeros(times)
+  for i in range(times):
+    batch_1 = dataset.sample(batch_size)
+    batch_2 = dataset.sample(batch_size)
+    positive_logll[i] = agent.action_loglikelihood(batch_1.state, batch_1.action, batch_1.task).detach().cpu().numpy()
+    negative_logll[i] = agent.action_loglikelihood(batch_1.state, batch_2.action, batch_1.task).detach().cpu().numpy()
+  print('pos:', np.nanmean(positive_logll), np.nanstd(positive_logll))
+  print('neg:', np.nanmean(negative_logll), np.nanstd(negative_logll))
+  t, p = ttest_ind(positive_logll, negative_logll)
+  print('t:', t, 'p:', p)
+  fig, ax = plt.subplots(1,1, figsize=(10,10))
+  ax.hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
+  ax.hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
+  plt.legend(['positive sample', 'negative sample'])
+  plt.title('action log likelihood, p={:.4f}'.format(p))
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  plt.close()
+
 def visualize_wu(args, dataset, agent):
   plt.rcParams.update({'font.size': 15})
   n_task = agent.n_task
@@ -35,7 +160,7 @@ def visualize_wu(args, dataset, agent):
   z_u1 = u1.detach().cpu().numpy()
   z_u2 = u2.detach().cpu().numpy()
   print('w:{}'.format(z_w.shape))
-  print(z_w)
+  sort_result = np.argsort(np.abs(z_w),axis=-1)[:,::-1]
   fig, axes = plt.subplots(3,1, figsize=(30,20))
   axes[0].imshow(z_w, cmap='coolwarm', aspect='auto')
   axes[0].set_title('w')
@@ -43,39 +168,74 @@ def visualize_wu(args, dataset, agent):
   axes[1].set_title('u1')
   axes[2].imshow(z_u2, cmap='coolwarm', aspect='auto')
   axes[2].set_title('u2')
+  fig.colorbar(axes[0].images[0], ax=axes[0])
+  fig.colorbar(axes[1].images[0], ax=axes[1])
+  fig.colorbar(axes[2].images[0], ax=axes[2])
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/wu.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
   print(save_path)
-  fig, axes = plt.subplots(1,1, figsize=(10,10))
+  fig, axes = plt.subplots(1,1, figsize=(30,10))
   axes.plot(z_w.T)
   axes.set_title('w')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/w.png'
+  plt.subplots_adjust(left=0.1, right=0.9)
   plt.savefig(save_path)
-  fig, axes = plt.subplots(1,1, figsize=(10,10))
+  print(save_path)
+  fig, axes = plt.subplots(1,1, figsize=(30,10))
   axes.plot(z_u1.T)
   axes.set_title('u1')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u1.png'
+  plt.subplots_adjust(left=0.1, right=0.9)
   plt.savefig(save_path)
+  print(save_path)
+  plt.close()
+  n_cols = 10
+  fig, axes = plt.subplots(n_task//n_cols+1, n_cols, figsize=(n_cols*10, (n_task//n_cols+1)*5))
+  axes = axes.flatten()
+  for i in range(n_task):
+    axes[i].plot(z_w[i])
+    axes[i].set_title(f'w{i},{sort_result[i,:6]}')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/w_line.png'
+  plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
+  plt.tight_layout()
+  plt.savefig(save_path)
+  fig, axes = plt.subplots(n_task//n_cols+1, n_cols, figsize=(n_cols*10, (n_task//n_cols+1)*5))
+  axes = axes.flatten()
+  for i in range(n_task):
+    axes[i].plot(z_u1[i])
+    axes[i].set_title(f'u{i}')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u1_line.png'
+  plt.subplots_adjust(wspace=0.1,hspace=0.1,left=0.1, right=0.9)
+  plt.tight_layout()
+  plt.savefig(save_path)
+  print(save_path)
+  plt.close()
 
-def get_edges():
-  state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
-                'SpineL','HipL','HipR','ElbowL','ArmL',
-                'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
-                'KneeL','ShinL','ShinR']
+def get_edges(state_dim):
+  if state_dim == 54:
+    state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
+                  'SpineL','HipL','HipR','ElbowL','ArmL',
+                  'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
+                  'KneeL','ShinL','ShinR']
 
-  skeleton = [('HeadF', 'HeadB'), ('HeadF', 'HeadL'), ('HeadB', 'HeadL'),
-              ('HeadB', 'SpineF'), ('HeadL', 'SpineF'), ('SpineF', 'SpineM'),
-              ('SpineM', 'SpineL'), ('SpineF', 'ShoulderL'), ('ShoulderL', 'ElbowL'),
-              ('ElbowL', 'ArmL'), ('SpineF', 'ShoulderR'), ('ShoulderR', 'ElbowR'),
-              ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
-              ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
-              ('KneeR', 'ShinR')]
+    skeleton = [('HeadF', 'HeadB'), ('HeadF', 'HeadL'), ('HeadB', 'HeadL'),
+                ('HeadB', 'SpineF'), ('HeadL', 'SpineF'), ('SpineF', 'SpineM'),
+                ('SpineM', 'SpineL'), ('SpineF', 'ShoulderL'), ('ShoulderL', 'ElbowL'),
+                ('ElbowL', 'ArmL'), ('SpineF', 'ShoulderR'), ('ShoulderR', 'ElbowR'),
+                ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
+                ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
+                ('KneeR', 'ShinR')]
+  elif state_dim == 18:
+    state_name = ['tail', 'spine4', 'spine3', 'spine2', 'spine1', 'head', 'nose', 'right ear', 'left ear']
+    skeleton = [('tail', 'spine4'), ('spine4', 'spine3'), ('spine3', 'spine2'),
+                ('spine2', 'spine1'), ('spine1', 'head'), ('head', 'nose'),
+                ('head', 'left ear'), ('head', 'right ear')]
   edges = []
   for i in skeleton:
     edges.append((state_name.index(i[0]), state_name.index(i[1])))
-  return edges
+  return edges, state_name
 
 def PCA_IG_skeleton(args, dataset, agent):
   # ig_matrix: [feature_dim, state_dim+action_dim]
@@ -109,7 +269,7 @@ def draw_IG_skeleton(args, dataset, agent):
 
 def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
   # ig_matrix: [feature_dim, state_dim+action_dim]
-  edges = get_edges()
+  edges, state_name = get_edges(ig_matrix_agg_xyz.shape[1]//2)
   col = 10*2
   row = feature_dim//(col//2) + 1
   fig, axes = plt.subplots(row, col, figsize=(col*5, row*6))
@@ -158,7 +318,7 @@ def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
     print(save_path)
   return
 
-def cal_IG_matrix(args, dataset, agent, times):
+def cal_IG_matrix(args, dataset, agent, times=3):
   state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
                 'SpineL','HipL','HipR','ElbowL','ArmL',
                 'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
@@ -190,7 +350,7 @@ def cal_IG_matrix(args, dataset, agent, times):
   print(action_max)
   for i in range(0, times):
     batch = dataset.sample(args.batch_size)
-    state, action, next_state, reward, done = unpack_batch(batch)
+    state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
     sa_ar = torch.cat([state, action], dim=1).to('cuda:0')
     sa_ar.requires_grad = True
     for j in range(agent.feature_dim):
@@ -421,15 +581,15 @@ def optimize_input(args, agent):
   final_input = optimized_input.detach()
   print("Final optimized input:", final_input)
 
-def test_logll(args, dataset, agent):
-  positive_ll = torch.zeros(args.times)
-  negative_ll = torch.zeros(args.times)
-  for i in range(0, args.times):
+def test_logll(args, dataset, agent, times=100):
+  positive_ll = torch.zeros(times)
+  negative_ll = torch.zeros(times)
+  for i in range(0, times):
     batch = dataset.sample(args.batch_size)
     batch_2 = dataset.sample(args.batch_size)
-    state, action, next_state, reward, done = unpack_batch(batch)
+    state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
     # print(state.shape, action.shape, next_state.shape)
-    s_random, a_random, ns_random, _, _ = unpack_batch(batch_2)
+    s_random, a_random, ns_random, _, _, _, _ = unpack_batch(batch_2)
     positive_ll[i] = agent.log_likelihood(state, action, next_state)
     negative_ll[i] = agent.log_likelihood(state, action, ns_random)
   # print(positive_ll)
@@ -473,14 +633,15 @@ if __name__ == "__main__":
   parser.add_argument("--extra_feature_steps", default=3, type=int)
   parser.add_argument("--ckpt_n", default=0, type=int)
   parser.add_argument("--times", default=3, type=int)
+  parser.add_argument("--device", default='cuda:0', type=str)
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_rat7m()
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
-  torch.manual_seed(args.seed)
-  np.random.seed(args.seed)
+  torch.manual_seed(args.seed+2)
+  np.random.seed(args.seed+2)
 
   kwargs = {
     "state_dim": state_dim,
@@ -491,7 +652,7 @@ if __name__ == "__main__":
     "hidden_dim": args.hidden_dim,
   }
 
-  kwargs['extra_feature_steps'] = 5
+  kwargs['extra_feature_steps'] = 2
   kwargs['phi_and_mu_lr'] = 0.0001
   kwargs['phi_hidden_dim'] = 512
   kwargs['phi_hidden_depth'] = 1
@@ -500,7 +661,7 @@ if __name__ == "__main__":
   kwargs['critic_and_actor_lr'] = 0.0001
   kwargs['critic_and_actor_hidden_dim'] = 256
   kwargs['feature_dim'] = args.feature_dim
-  kwargs['device'] = 'cuda:0'
+  kwargs['device'] = args.device
   kwargs['state_task_dataset'] = replay_buffer.state
   kwargs['learnable_temperature'] = True
   kwargs['n_task'] = n_task
@@ -519,7 +680,9 @@ if __name__ == "__main__":
   # get_edges()
   # draw_IG_skeleton(args, replay_buffer, agent)
   # PCA_IG_skeleton(args, replay_buffer, agent)
-  visualize_wu(args, replay_buffer, agent)
-
+  # visualize_wu(args, replay_buffer, agent)
+  # action_loglikelihood(args, replay_buffer, agent)
+  # check_action_space(args, replay_buffer, agent)
+  rollout(args, replay_buffer, agent)
 
 

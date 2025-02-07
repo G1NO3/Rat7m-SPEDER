@@ -14,12 +14,23 @@ from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
 
-def load_rat7m():
+def load_keymoseq(category, device='cuda:0'):
+  state_dim = 18
+  action_dim = 18
+  n_task = 20
+  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
+  replay_buffer_path = f'./kms/{category}_buffer_state_dict.pth'
+  replay_buffer.load_state_dict(torch.load(replay_buffer_path))
+  print(f'Replay buffer loaded from {replay_buffer_path}')
+  return replay_buffer, state_dim, action_dim, n_task
+  
+
+def load_rat7m(category, device='cuda:0'):
   state_dim = 54
   action_dim = 54
   n_task = 60
-  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, 'cuda:0')
-  replay_buffer_path = f'./data/replay_buffer_18body_normalized_new.pth'
+  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
+  replay_buffer_path = f'./data/replay_buffer_18body_normalized_new_{category}.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
   return replay_buffer, state_dim, action_dim, n_task
@@ -49,12 +60,12 @@ if __name__ == "__main__":
   parser.add_argument("--hidden_dim", default=256, type=int)      # Network hidden dims
   parser.add_argument("--feature_dim", default=256, type=int)      # Latent feature dim
   parser.add_argument("--discount", default=0.99, type=float)                 # Discount factor
-  parser.add_argument("--tau", default=0.005)                     # Target network update rate
+  parser.add_argument("--tau", default=0.005, type=float)                     # Target network update rate
   parser.add_argument("--learn_bonus", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--save_model", action="store_true")        # Save model and optimizer parameters
   parser.add_argument("--extra_feature_steps", default=3, type=int)
   parser.add_argument("--lasso_coef", default=1e-3, type=float)
-  parser.add_argument("--feature_lr", default=1e-3, type=float)
+  parser.add_argument("--feature_lr", default=5e-4, type=float)
   parser.add_argument("--policy_lr", default=3e-4, type=float)
   args = parser.parse_args()
 
@@ -78,7 +89,7 @@ if __name__ == "__main__":
   # setup log 
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
-  replay_buffer, state_dim, action_dim, n_task = load_rat7m()
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('train')
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):
     os.makedirs(save_path)
@@ -116,7 +127,7 @@ if __name__ == "__main__":
   elif args.alg == 'diffsrsac':
     agent = diffsrsac_agent.DIFFSRSACAgent(**kwargs)
   elif args.alg == 'spedersac':
-    kwargs['extra_feature_steps'] = 5
+    kwargs['extra_feature_steps'] = 2
     kwargs['phi_and_mu_lr'] = args.feature_lr
     kwargs['phi_hidden_dim'] = 512
     kwargs['phi_hidden_depth'] = 1
@@ -131,12 +142,15 @@ if __name__ == "__main__":
     agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
-  if args.dir[-5:] == '_fixf':
-    pretrained_dir_name = args.dir[:-5]
-    pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
-    agent.load_phi_mu(torch.load(pretrained_model_path))
-    print(f'Model loaded from {pretrained_model_path}')
-    print('Fixed Phi and Mu')
+  # if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
+  #   pretrained_dir_name = 'dim64_sa_sp_buffer_18body_normalized_lasso1e-2_xyz_group'
+  #   pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+  #   agent.load_phi_mu(torch.load(pretrained_model_path))
+  #   print(f'Model loaded from {pretrained_model_path}')
+  #   if args.dir.endswith('fixf'):
+  #     print('Fix Phi and Mu')
+  #   else:
+  #     print('Finetune Phi')
 
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]

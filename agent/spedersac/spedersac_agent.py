@@ -27,7 +27,7 @@ class SPEDERSACAgent():
             self,
             state_dim,
             action_dim,
-            action_space,
+            action_space=None,
             phi_and_mu_lr=-1,
             # 3e-4 was originally proposed in the paper, but seems to results in fluctuating performance
             phi_hidden_dim=-1,
@@ -89,7 +89,11 @@ class SPEDERSACAgent():
         self.learnable_temperature = learnable_temperature
         self.target_update_period = target_update_period
         self.tau = tau
-        self.normalize_dict = torch.load(f'./kms/normalize_dict.pth')
+        self.normalize_dict = torch.load(f'./kms/normalize_dict_214.pth')
+        self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
+        self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
+        self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
+        self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
         # for key, value in self.normalize_dict.items():
         #     self.normalize_dict[key] = torch.FloatTensor(value).to(self.device)
         self.phi = MLP(input_dim=state_dim + action_dim,
@@ -257,44 +261,44 @@ class SPEDERSACAgent():
         target_q = r + (1 - expert_done) * self.discount * self.get_targetV(expert_next_state, expert_next_task_onehot).detach()
 
         u1, u2 = self.critic(expert_task_onehot)
-        q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True).detach()
-        q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True).detach()
+        q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True).detach() # irrelevant to critic
+        q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True).detach() # irrelevant to critic
         q1_loss = F.mse_loss(target_q, q1)
         q2_loss = F.mse_loss(target_q, q2)
         qr_loss = q1_loss + q2_loss
 
         ##IQ Learn loss
-        iq_alpha = 0.5
+        # iq_alpha = 0.5
         
-        dist = self.actor(torch.cat([expert_next_state, expert_next_task_onehot], -1))
-        sample_next_action = dist.sample().detach() # irrelevant to actor
-        next_Q = self.get_targetQ(expert_next_state, sample_next_action, expert_next_task_onehot).detach()
-        sample_next_action_logprob = dist.log_prob(sample_next_action)
-        next_V = (next_Q - self.alpha.detach() * sample_next_action_logprob.sum(-1, keepdim=True))
+        # dist = self.actor(torch.cat([expert_next_state, expert_next_task_onehot], -1))
+        # sample_next_action = dist.sample().detach() # irrelevant to actor
+        # next_Q = self.get_targetQ(expert_next_state, sample_next_action, expert_next_task_onehot).detach()
+        # sample_next_action_logprob = dist.log_prob(sample_next_action)
+        # next_V = (next_Q - self.alpha.detach() * sample_next_action_logprob.sum(-1, keepdim=True))
         # -E_(ρ_expert)[Q(s, a) - γV(s')]
-        y = (1 - expert_done) * self.discount * next_V.detach()
+        # y = (1 - expert_done) * self.discount * next_V.detach()
         # print('next_Q:', torch.where(torch.isnan(next_Q.flatten())))
         # print('logprob:', torch.where(torch.isnan(dist.log_prob(sample_next_action))))
         # if torch.isnan(sample_next_action_logprob).any():
         #     print('state:', expert_next_state[187], torch.where(torch.isnan(expert_next_state)))
         #     print('action:', sample_next_action[187,47], torch.where(torch.isnan(sample_next_action)))
         #     print('task:', expert_next_task.flatten()[187], torch.where(torch.isnan(expert_next_task)))
-        expert_Q = self.getQ_detach_phi(expert_state, expert_action, expert_task_onehot)
-        r = expert_Q - y # the gradient is only with expert Q
-        loss_1 = -r.mean()
+        # expert_Q = self.getQ_detach_phi(expert_state, expert_action, expert_task_onehot)
+        # r = expert_Q - y # the gradient is only with expert Q
+        # loss_1 = -r.mean()
 
         # E_(ρ)[V(s) - γV(s')]
-        dist = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
-        sample_action = dist.sample().detach() # irrelevant to actor
-        current_Q = self.getQ_detach_phi(expert_state, sample_action, expert_task_onehot)
-        action_logprob = dist.log_prob(sample_action).sum(-1, keepdim=True)
-        current_V = current_Q - self.alpha.detach() * action_logprob # the gradient is only with sample_Q and V
-        loss_2 = (current_V - y).mean()
+        # dist = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        # sample_action = dist.sample().detach() # irrelevant to actor
+        # current_Q = self.getQ_detach_phi(expert_state, sample_action, expert_task_onehot)
+        # action_logprob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+        # current_V = current_Q - self.alpha.detach() * action_logprob # the gradient is only with sample_Q and V
+        # loss_2 = (current_V - y).mean()
 
         # regularization
-        loss_3 = 1/(4*iq_alpha) * (r**2).mean()
+        # loss_3 = 1/(4*iq_alpha) * (r**2).mean()
 
-        iql_loss = loss_1 + loss_2 + loss_3
+        # iql_loss = loss_1 + loss_2 + loss_3
         # print('loss_1:', loss_1.item())
         # print('current_Q:', current_Q.flatten(), 'action_prob:', action_logprob)
         # print('isnan:', torch.where(torch.isnan(action_logprob)), torch.where(torch.isnan(current_Q.flatten())), 
@@ -302,15 +306,29 @@ class SPEDERSACAgent():
         # print('loss_2:', loss_2.item())
         # print('loss_3:', loss_3.item())
         ##
+        # SAC loss
+        expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
+        dist = self.actor(expert_state_task)
+        sample_action = dist.rsample()
+        sample_log_prob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+
+        z_phi_sample = self.phi(torch.concat([expert_state, sample_action], -1))
+
+        # u1, u2 = self.critic(expert_task_onehot) # irrelevant to critic
+        sample_q1 = torch.sum(z_phi_sample * u1, dim=-1, keepdim=True)
+        sample_q2 = torch.sum(z_phi_sample * u2, dim=-1, keepdim=True)
+        sample_q = torch.min(sample_q1, sample_q2)
+
+        SAC_loss = ((self.alpha) * sample_log_prob - sample_q).mean()
 
         u1_l1_loss = torch.abs(u1).mean()
         u2_l1_loss = torch.abs(u2).mean()
         w_l1_loss = torch.abs(w_batch).mean(-1).norm(2,dim=0)
 
-        l1_loss = (u1_l1_loss + u2_l1_loss + w_l1_loss) * 0.2
+        # l1_loss = (u1_l1_loss + u2_l1_loss + w_l1_loss) * 0.2
 
         #
-        loss = qr_loss + l1_loss
+        loss = qr_loss + SAC_loss
         # print('q_loss', q_loss)
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -321,13 +339,13 @@ class SPEDERSACAgent():
             'q2_loss': q2_loss.item(),
             'q1': q1.mean().item(),
             'q2': q2.mean().item(),
-            'l1_loss': l1_loss.item(),
+            # 'l1_loss': l1_loss.item(),
             'w_l1_loss': w_l1_loss.item(),
             'u1_l1_loss': u1_l1_loss.item(),
-            'iql_loss_1': loss_1.item(),
-            'iql_loss_2': loss_2.item(),
-            'iql_loss_3': loss_3.item(),
-            'iql_loss': iql_loss.item(),
+            # 'iql_loss_1': loss_1.item(),
+            # 'iql_loss_2': loss_2.item(),
+            # 'iql_loss_3': loss_3.item(),
+            # 'iql_loss': iql_loss.item(),
         }
 
     def another_critic_step(self, batch):       
@@ -401,7 +419,7 @@ class SPEDERSACAgent():
         assert expert_next_state.shape[-1] == self.state_dim
         assert expert_done.shape[-1] == 1
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().reshape(-1)].to(self.device)
-        expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().reshape(-1)].to(self.device)
+        # expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().reshape(-1)].to(self.device)
         expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
 
 
@@ -410,26 +428,25 @@ class SPEDERSACAgent():
         expert_log_prob = dist.log_prob(expert_action).sum(-1, keepdim=True)
         negll = -expert_log_prob.mean()
 
-        sample_action = dist.rsample()
-        sample_log_prob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+        # sample_action = dist.rsample()
+        # sample_log_prob = dist.log_prob(sample_action).sum(-1, keepdim=True)
 
-        z_phi_sample = self.phi(torch.concat([expert_state, sample_action], -1))
+        # z_phi_sample = self.phi(torch.concat([expert_state, sample_action], -1))
 
-        u1, u2 = self.critic(expert_task_onehot) # irrelevant to critic
-        sample_q1 = torch.sum(z_phi_sample * u1, dim=-1, keepdim=True)
-        sample_q2 = torch.sum(z_phi_sample * u2, dim=-1, keepdim=True)
-        sample_q = torch.min(sample_q1, sample_q2)
+        # u1, u2 = self.critic(expert_task_onehot) # irrelevant to critic
+        # sample_q1 = torch.sum(z_phi_sample * u1, dim=-1, keepdim=True)
+        # sample_q2 = torch.sum(z_phi_sample * u2, dim=-1, keepdim=True)
+        # sample_q = torch.min(sample_q1, sample_q2)
 
-        SAC_loss = ((self.alpha) * sample_log_prob - sample_q).mean()
+        # SAC_loss = ((self.alpha) * sample_log_prob - sample_q).mean()
 
-        actor_loss = SAC_loss + negll
+        actor_loss = negll
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
 
         info = {'actor_loss': actor_loss.item(),
-                'negll': negll.item(),
-                'SAC_loss': SAC_loss.item()}
+                'negll': negll.item()}
 
         # print('actor_loss', actor_loss)
         # print('negll', negll)
@@ -484,20 +501,20 @@ class SPEDERSACAgent():
             # Update the feature network if needed
             if self.use_feature_target:
                 self.update_feature_target()
-        batch_1 = buffer.sample(batch_size)
+        # batch_1 = buffer.sample(batch_size)
         # Critic step, IRL
-        critic_info = self.critic_step(batch_1)
+        # critic_info = self.critic_step(batch_1)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        actor_info = self.update_actor_and_alpha(batch_1)
+        # actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
-        self.update_target()
+        # self.update_target()
 
         return {
             **feature_info,
-            **critic_info,
-            **actor_info,
+            # **critic_info,
+            # **actor_info,
         }
     
     def log_likelihood(self, state, action, next_state, kde=False):
@@ -614,7 +631,7 @@ class QR_IRLAgent():
         self.learnable_temperature = learnable_temperature
         self.target_entropy = -action_dim
         self.actor = DiagGaussianActor(
-            obs_dim=state_dim,
+            obs_dim=state_dim + n_task,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             hidden_depth=2,
@@ -624,11 +641,13 @@ class QR_IRLAgent():
         self.log_alpha = torch.tensor(np.log(1.0)).to(self.device)
         self.log_alpha.requires_grad = True
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=1e-3)
-        self.normalize_dict = torch.load(f'./kms/normalize_dict_212.pth')
+        self.normalize_dict = torch.load(f'./kms/normalize_dict_214.pth')
         self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
         self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
         self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
         self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
+        self.n_task = n_task
+        self.task_all = torch.eye(n_task).to(device)
 
     @property
     def alpha(self):
@@ -688,7 +707,8 @@ class QR_IRLAgent():
         }
     def update_actor_and_alpha(self, batch):
         state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
-        dist = self.actor(state)
+        task_onehot = self.task_all[task.long().reshape(-1)].to(self.device)
+        dist = self.actor(torch.cat([state, task_onehot], -1))
         # sample_action = dist.rsample()
         # sample_q1, sample_q2 = self.getQ(state, sample_action)
         # sample_q = torch.min(sample_q1, sample_q2)
@@ -732,7 +752,8 @@ class QR_IRLAgent():
 
     def action_loglikelihood(self, state, action, task):
         self.actor.eval()
-        dist = self.actor(state)
+        task_onehot = self.task_all[task.long().squeeze(1)].to(self.device)
+        dist = self.actor(torch.cat([state, task_onehot], -1))
         actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         return actor_log_prob.mean()
 
@@ -753,7 +774,9 @@ class QR_IRLAgent():
             print(state.shape, action.shape)
             next_state = self.generate_next_state(state, action)
             print('next_state:', next_state.shape)
-            dist = self.actor(next_state)
+            print(task)
+            task_onehot = self.task_all[task].to(self.device).unsqueeze(0)
+            dist = self.actor(torch.cat([next_state, task_onehot], -1))
             next_action = dist.sample()
             # q1, q2 = self.getQ(next_state, next_action)
             # q = torch.min(q1, q2)

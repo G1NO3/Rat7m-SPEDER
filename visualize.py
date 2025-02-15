@@ -13,7 +13,7 @@ from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
-from main import load_rat7m, load_halfcheetah, load_keymoseq, load_keymoseq_onetask
+from main import load_rat7m, load_halfcheetah, load_keymoseq, load_keymoseq
 from utils.util import unpack_batch
 from matplotlib import pyplot as plt
 from scipy.stats import ttest_ind
@@ -27,9 +27,48 @@ from captum.attr import Saliency
 from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
 
-def rollout(args, dataset, agent):
-  syllable = 4
-  timestep = 30
+def action_loglikelihood_multiple_syllables(args, dataset, agent):
+  for i in range(agent.n_task):
+    action_loglikelihood_single_syllable(args, dataset, agent, i)
+
+def action_loglikelihood_single_syllable(args, dataset, agent, syllable, times=100):
+  positive_logll = np.zeros(times)
+  negative_logll = np.zeros(times)
+  for i in range(times):
+    while True:
+      sample = dataset.sample(args.batch_size)
+      task = sample.task
+      # print(task)
+      all_idx = torch.where(task == syllable)[0]
+      if len(all_idx) > 0:
+        break
+    idx = all_idx[0]
+    state = sample.state[all_idx]
+    action = sample.action[all_idx]
+    task = sample.task[all_idx]
+    random_action = sample.action[torch.randint(0, len(all_idx), (len(all_idx),))]
+    positive_logll[i] = agent.action_loglikelihood(state, action, task).detach().cpu().numpy()
+    negative_logll[i] = agent.action_loglikelihood(state, random_action, task).detach().cpu().numpy()
+  print('pos:', np.nanmean(positive_logll), np.nanstd(positive_logll))
+  print('neg:', np.nanmean(negative_logll), np.nanstd(negative_logll))
+  t, p = ttest_ind(positive_logll, negative_logll)
+  print('t:', t, 'p:', p)
+  fig, ax = plt.subplots(1,1, figsize=(10,10))
+  ax.hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
+  ax.hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
+  plt.legend(['positive sample', 'negative sample'])
+  plt.title(f'action log likelihood, syllable {syllable}, p={p:.4f}')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll_{syllable}.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+
+def rollout_multiple_syllables(args, dataset, agent):
+  for i in range(agent.n_task):
+    rollout(args, dataset, agent, i)
+
+def rollout(args, dataset, agent, syllable, timestep=30):
   while True:
     sample = dataset.sample(args.batch_size)
     task = sample.task
@@ -37,7 +76,7 @@ def rollout(args, dataset, agent):
     all_idx = torch.where(task == syllable)[0]
     if len(all_idx) > 0:
       break
-  idx = all_idx[1]
+  idx = all_idx[0]
   state = sample.state[idx:idx+1]
   action = sample.action[idx:idx+1]
   stateseq = torch.zeros((timestep, *state.shape))
@@ -49,7 +88,7 @@ def rollout(args, dataset, agent):
     print(sp_likelihood, ap_q)
     stateseq[i] = state * agent.state_std + agent.state_mean
     actionseq[i] = action * agent.action_std + agent.action_mean
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout.gif'
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   plot_gif(stateseq.squeeze(1), save_path)
   
 def plot_gif(stateseq, save_path):
@@ -641,11 +680,11 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq_onetask('test', args.device)
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
-  torch.manual_seed(args.seed+2)
-  np.random.seed(args.seed+2)
+  torch.manual_seed(args.seed)
+  np.random.seed(args.seed)
 
   kwargs = {
     "state_dim": state_dim,
@@ -686,8 +725,11 @@ if __name__ == "__main__":
   # draw_IG_skeleton(args, replay_buffer, agent)
   # PCA_IG_skeleton(args, replay_buffer, agent)
   # visualize_wu(args, replay_buffer, agent)
-  action_loglikelihood(args, replay_buffer, agent)
+  # action_loglikelihood(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
-  rollout(args, replay_buffer, agent)
+  # rollout(args, replay_buffer, agent)
+  # rollout_multiple_syllables(args, replay_buffer, agent)
+  action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
+
 
 

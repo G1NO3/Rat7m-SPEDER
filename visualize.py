@@ -13,7 +13,7 @@ from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
-from main import load_rat7m, load_halfcheetah, load_keymoseq
+from main import load_rat7m, load_halfcheetah, load_keymoseq, load_keymoseq_onetask
 from utils.util import unpack_batch
 from matplotlib import pyplot as plt
 from scipy.stats import ttest_ind
@@ -28,29 +28,29 @@ from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
 
 def rollout(args, dataset, agent):
-  syllable = 1
-  timestep = 3
+  syllable = 4
+  timestep = 30
   while True:
     sample = dataset.sample(args.batch_size)
     task = sample.task
-    print(task)
+    # print(task)
     all_idx = torch.where(task == syllable)[0]
     if len(all_idx) > 0:
       break
-  idx = all_idx[0]
-  state = sample.state[idx]
-  action = sample.action[idx]
+  idx = all_idx[1]
+  state = sample.state[idx:idx+1]
+  action = sample.action[idx:idx+1]
   stateseq = torch.zeros((timestep, *state.shape))
   actionseq = torch.zeros((timestep, *action.shape))
-  stateseq[0] = state
+  stateseq[0] = state * agent.state_std + agent.state_mean
   actionseq[0] = action
   for i in range(1, timestep):
     state, action, sp_likelihood, ap_q = agent.step(state, syllable, action)
     print(sp_likelihood, ap_q)
-    stateseq[i] = state
-    actionseq[i] = action
+    stateseq[i] = state * agent.state_std + agent.state_mean
+    actionseq[i] = action * agent.action_std + agent.action_mean
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout.gif'
-  plot_gif(stateseq, save_path)
+  plot_gif(stateseq.squeeze(1), save_path)
   
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]
@@ -64,6 +64,7 @@ def plot_gif(stateseq, save_path):
   else:
     dims, name = [0,1], 'xy'
     state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
+    
   cmap = plt.cm.get_cmap('viridis')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   rasters = []
@@ -134,6 +135,7 @@ def action_loglikelihood(args, dataset, agent):
   for i in range(times):
     batch_1 = dataset.sample(batch_size)
     batch_2 = dataset.sample(batch_size)
+    # action_2 = torch.randn_like(batch_1.action)
     positive_logll[i] = agent.action_loglikelihood(batch_1.state, batch_1.action, batch_1.task).detach().cpu().numpy()
     negative_logll[i] = agent.action_loglikelihood(batch_1.state, batch_2.action, batch_1.task).detach().cpu().numpy()
   print('pos:', np.nanmean(positive_logll), np.nanstd(positive_logll))
@@ -227,11 +229,13 @@ def get_edges(state_dim):
                 ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
                 ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
                 ('KneeR', 'ShinR')]
-  elif state_dim == 18:
-    state_name = ['tail', 'spine4', 'spine3', 'spine2', 'spine1', 'head', 'nose', 'right ear', 'left ear']
-    skeleton = [('tail', 'spine4'), ('spine4', 'spine3'), ('spine3', 'spine2'),
+  elif state_dim == 16:
+    state_name = ['spine4', 'spine3', 'spine2', 'spine1', 'head', 'nose', 'right ear', 'left ear']
+    skeleton = [('spine4', 'spine3'), ('spine3', 'spine2'),
                 ('spine2', 'spine1'), ('spine1', 'head'), ('head', 'nose'),
                 ('head', 'left ear'), ('head', 'right ear')]
+  else:
+    raise ValueError(f'state_dim {state_dim} not supported')
   edges = []
   for i in skeleton:
     edges.append((state_name.index(i[0]), state_name.index(i[1])))
@@ -637,7 +641,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.device)
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq_onetask('test', args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
   torch.manual_seed(args.seed+2)
@@ -646,7 +650,7 @@ if __name__ == "__main__":
   kwargs = {
     "state_dim": state_dim,
     "action_dim": action_dim,
-    "action_space": gym.spaces.Box(-1, 1, (action_dim,), dtype=np.float32),
+    # "action_space": gym.spaces.Box(-1, 1, (action_dim,), dtype=np.float32),
     "discount": args.discount,
     "tau": args.tau,
     "hidden_dim": args.hidden_dim,
@@ -665,7 +669,8 @@ if __name__ == "__main__":
   kwargs['state_task_dataset'] = replay_buffer.state
   kwargs['learnable_temperature'] = True
   kwargs['n_task'] = n_task
-  agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+  # agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+  agent = spedersac_agent.QR_IRLAgent(**kwargs)
   
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
@@ -681,7 +686,7 @@ if __name__ == "__main__":
   # draw_IG_skeleton(args, replay_buffer, agent)
   # PCA_IG_skeleton(args, replay_buffer, agent)
   # visualize_wu(args, replay_buffer, agent)
-  # action_loglikelihood(args, replay_buffer, agent)
+  action_loglikelihood(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
   rollout(args, replay_buffer, agent)
 

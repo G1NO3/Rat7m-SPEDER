@@ -8,7 +8,7 @@ import os
 
 # from utils.util import unpack_batch, RunningMeanStd
 from utils.util import unpack_batch
-from utils.util import MLP
+from utils.util import MLP, DoubleMLP
 
 from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor
@@ -16,112 +16,6 @@ from torchinfo import summary
 import numpy as np
 
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-class truncated_normal(pyd.transformed_distribution.TransformedDistribution):
-    def __init__(self, mean, std, low, high):
-        self.mean = mean
-        self.std = std
-        self.low = low
-        self.high = high
-        self.normal_dist = Normal(mean, std)
-        # Transform the standard normal into a truncated range
-        # SigmoidTransform maps (-inf, inf) -> (0, 1)
-        # AffineTransform scales (0, 1) -> (low, high)
-        self.trunc_transform = torch.distributions.transforms.ComposeTransform([
-            SigmoidTransform(),  # Maps to (0, 1)
-            AffineTransform(loc=low, scale=high - low)  # Maps (0, 1) -> (low, high)
-        ])
-        super().__init__(self.normal_dist, self.trunc_transform)
-
-
-class RFFCritic(nn.Module):
-
-    def __init__(self, feature_dim, hidden_dim):
-        super().__init__()
-
-        # Q1
-        self.l1 = nn.Linear(feature_dim, hidden_dim)  # random feature
-        self.l2 = nn.Linear(hidden_dim, hidden_dim)
-        self.l3 = nn.Linear(hidden_dim, 1)
-
-        # Q2
-        self.l4 = nn.Linear(feature_dim, hidden_dim)  # random feature
-        self.l5 = nn.Linear(hidden_dim, hidden_dim)
-        self.l6 = nn.Linear(hidden_dim, 1)
-
-        self.outputs = dict()
-
-    def forward(self, critic_feed_feature):
-        q1 = torch.sin(self.l1(critic_feed_feature))
-        q1 = F.elu(self.l2(q1))
-        q1 = self.l3(q1)
-
-        q2 = torch.sin(self.l4(critic_feed_feature))
-        q2 = F.elu(self.l5(q2))
-        q2 = self.l6(q2)
-
-        self.outputs['q1'] = q1
-        self.outputs['q2'] = q2
-
-        return q1, q2
-
-
-class MLP(nn.Module):
-    def __init__(self,
-                 input_dim,
-                 hidden_dim,
-                 output_dim,
-                 hidden_depth,
-                 ):
-        super().__init__()
-        self.trunk = mlp(input_dim, hidden_dim, output_dim, hidden_depth)
-
-    def forward(self, x):
-        return self.trunk(x)
-
-class DoubleMLP(nn.Module):
-    def __init__(self,
-                 input_dim,
-                 hidden_dim,
-                 output_dim,
-                 hidden_depth,
-                 ):
-        super().__init__()
-        self.trunk1 = mlp(input_dim, hidden_dim, output_dim, hidden_depth)
-        self.trunk2 = mlp(input_dim, hidden_dim, output_dim, hidden_depth)
-
-    def forward(self, x):
-        return self.trunk1(x), self.trunk2(x)
-
-def mlp(input_dim, hidden_dim, output_dim, hidden_depth):
-    if hidden_depth == 0:
-        mods = [nn.Linear(input_dim, output_dim)]
-    else:
-        mods = [nn.Linear(input_dim, hidden_dim), nn.ELU(inplace=True)]
-        for i in range(hidden_depth - 1):
-            mods += [nn.Linear(hidden_dim, hidden_dim), nn.ELU(inplace=True)]
-        mods.append(nn.Linear(hidden_dim, output_dim))
-    trunk = nn.Sequential(*mods)
-    return trunk
-
-
-class Theta(nn.Module):
-    """
-    Linear theta
-    <phi(s, a), theta> = r
-    """
-
-    def __init__(
-            self,
-            feature_dim=1024,
-    ):
-        super(Theta, self).__init__()
-        self.l = nn.Linear(feature_dim, 1)
-
-    def forward(self, feature):
-        r = self.l(feature)
-        return r
 
 
 class SPEDERSACAgent():
@@ -673,6 +567,332 @@ class SPEDERSACAgent():
             unnormlized_action_logprob = q
         return next_state, next_action, sp_likelihood, unnormlized_action_logprob
             
+
+
+class QR_IRLAgent():
+    def __init__(
+            self,
+            state_dim,
+            action_dim,
+            phi_and_mu_lr=-1,
+            # 3e-4 was originally proposed in the paper, but seems to results in fluctuating performance
+            phi_hidden_dim=-1,
+            phi_hidden_depth=-1,
+            mu_hidden_dim=-1,
+            mu_hidden_depth=-1,
+            critic_and_actor_lr=-1,
+            critic_and_actor_hidden_dim=-1,
+            discount=0.99,
+            target_update_period=2,
+            tau=0.005,
+            alpha=0.1,
+            auto_entropy_tuning=True,
+            hidden_dim=1024,
+            feature_tau=0.005,
+            feature_dim=2048,  # latent feature dim
+            use_feature_target=True,
+            extra_feature_steps=1,
+            device='cuda:0',
+            state_task_dataset=None,
+            lasso_coef=1e-3,
+            n_task=3,
+            learnable_temperature=False):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        # self.n_task = n_task
+        self.device = device
+        self.critic = DoubleMLP(input_dim=self.state_dim + self.action_dim, # try single task
+                          output_dim=1,
+                          hidden_dim=hidden_dim,
+                            hidden_depth=1).to(device)
+        self.critic_target = copy.deepcopy(self.critic)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
+        self.tau = 0.005
+        self.steps = 0
+        self.discount = discount
+        self.target_update_period = target_update_period
+        self.learnable_temperature = learnable_temperature
+        self.target_entropy = -action_dim
+        self.actor = DiagGaussianActor(
+            obs_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
+            hidden_depth=2,
+            log_std_bounds=[-5., 2.],
+        ).to(device)
+        self.actor_optimizer = torch.optim.Adam(list(self.actor.parameters()), lr=1e-3)
+        self.log_alpha = torch.tensor(np.log(1.0)).to(self.device)
+        self.log_alpha.requires_grad = True
+        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=1e-3)
+        self.normalize_dict = torch.load(f'./kms/normalize_dict_212.pth')
+        self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
+        self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
+        self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
+        self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
+
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
+    
+    def update_target(self):
+        if self.steps % self.target_update_period == 0:
+            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
+    def getQ(self, state, action):
+        return self.critic(torch.concat([state, action], -1))
+    def getV(self, state):
+        dist = self.actor(state)
+        action = dist.rsample()
+        q1, q2 = self.getQ(state, action)
+        q = torch.min(q1, q2)
+        v = q - self.alpha.detach() * dist.log_prob(action).sum(-1, keepdim=True)
+        return v
+    def get_targetQ(self, state, action):
+        return self.critic_target(torch.concat([state, action], -1))
+    def get_targetV(self, state):
+        dist = self.actor(state)
+        action = dist.sample()
+        target_q1, target_q2 = self.get_targetQ(state, action)
+        target_q = torch.min(target_q1, target_q2)
+        target_v = target_q - self.alpha.detach() * dist.log_prob(action).sum(-1, keepdim=True)
+        return target_v
+    def iq_loss(self, current_Q, current_v, next_v, done):
+        iq_alpha = 0.5
+        y = (1 - done) * self.discount * next_v
+        r = current_Q - y
+        loss_1 = -r.mean()
+        loss_2 = (current_v - y).mean()
+        loss_3 = 1/(4*iq_alpha) * (r**2).mean()
+        iql_loss = loss_1 + loss_2 + loss_3
+        return iql_loss
+    def critic_step(self, batch):
+        state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        assert next_state.shape[-1] == self.state_dim
+        assert done.shape[-1] == 1
+        current_q1, current_q2 = self.getQ(state, action)
+        next_v = self.get_targetV(next_state).detach()
+        current_v = self.getV(state)
+        q1_iqlloss = self.iq_loss(current_q1, current_v, next_v, done)
+        q2_iqlloss = self.iq_loss(current_q2, current_v, next_v, done)
+        critic_loss = (q1_iqlloss + q2_iqlloss) / 2
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        self.critic_optimizer.step()
+        return {
+            'q1_iqlloss': q1_iqlloss.item(),
+            'q2_iqlloss': q2_iqlloss.item(),
+            'critic_loss': critic_loss.item()
+        }
+    def update_actor_and_alpha(self, batch):
+        state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
+        dist = self.actor(state)
+        # sample_action = dist.rsample()
+        # sample_q1, sample_q2 = self.getQ(state, sample_action)
+        # sample_q = torch.min(sample_q1, sample_q2)
+        # sample_action_logprob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+        # SAC_loss = ((self.alpha) * sample_action_logprob - sample_q).mean()
+        # actor_loss = SAC_loss
+        ###Behavior Cloning
+        log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+        actor_loss = -log_prob.mean()
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        self.actor_optimizer.step()
+        info = {'actor_loss': actor_loss.item()}
+
+        # if self.learnable_temperature:
+        #     self.log_alpha_optimizer.zero_grad()
+        #     alpha_loss = (self.alpha * (-sample_action_logprob - self.target_entropy).detach()).mean()
+        #     alpha_loss.backward()
+        #     self.log_alpha_optimizer.step()
+
+        #     info['alpha_loss'] = alpha_loss
+        #     info['alpha'] = self.alpha
+        return info
+    def train(self, buffer, batch_size):
+        self.steps += 1
+        # critic_info = self.critic_step(buffer.sample(batch_size))
+        actor_info = self.update_actor_and_alpha(buffer.sample(batch_size))
+        self.update_target()
+        return {
+            # **critic_info,
+            **actor_info
+        }
+    def state_dict(self):
+        return {'critic': self.critic.state_dict(),
+                'log_alpha': self.log_alpha,
+                'actor': self.actor.state_dict()}
+    def load_state_dict(self, state_dict):
+        self.critic.load_state_dict(state_dict['critic'])
+        self.log_alpha = state_dict['log_alpha']
+        self.actor.load_state_dict(state_dict['actor'])
+
+    def action_loglikelihood(self, state, action, task):
+        self.actor.eval()
+        dist = self.actor(state)
+        actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+        return actor_log_prob.mean()
+
+    def generate_next_state(self, state, action):
+        original_state = state * self.state_std + self.state_mean
+        original_action = action * self.action_std + self.action_mean
+        original_next_state = original_state + original_action
+        next_state = (original_next_state - self.state_mean) / self.state_std
+        return next_state
+        
+    def step(self, state, task, action):
+        print('syllable:', task)
+        # state_max, state_min = self.normalize_dict['state_max'], self.normalize_dict['state_min']
+        # action_max, action_min = self.normalize_dict['action_max'], self.normalize_dict['action_min']
+        with torch.no_grad():
+            self.actor.eval()
+            self.critic.eval()
+            print(state.shape, action.shape)
+            next_state = self.generate_next_state(state, action)
+            print('next_state:', next_state.shape)
+            dist = self.actor(next_state)
+            next_action = dist.sample()
+            # q1, q2 = self.getQ(next_state, next_action)
+            # q = torch.min(q1, q2)
+            # unnormlized_action_logprob = q
+        return next_state, next_action, 0, 0
+
+            
+class ValueDICEAgent():
+    def __init__(
+            self,
+            state_dim,
+            action_dim,
+            critic_and_actor_hidden_dim=-1,
+            discount=0.99,
+            target_update_period=2,
+            alpha=0.1,
+            device='cuda:0'):
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.device = device
+        self.nu_net = MLP(input_dim=state_dim+action_dim,
+                          output_dim=1,
+                          hidden_dim=critic_and_actor_hidden_dim,
+                          hidden_depth=1).to(device)
+        self.actor = DiagGaussianActor(
+            obs_dim=state_dim,
+            action_dim=action_dim,
+            hidden_dim=critic_and_actor_hidden_dim,
+            hidden_depth=2,
+            log_std_bounds=[-5., 2.],
+        ).to(device)
+        self.nu_optimizer = torch.optim.Adam(self.nu_net.parameters(), lr=1e-3)
+        self.actor_optimizer = torch.optim.Adam(list(self.actor.parameters()), lr=1e-3)
+        self.log_alpha = torch.tensor(np.log(1.0)).to(self.device)
+        self.log_alpha.requires_grad = True
+        self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=1e-3)
+        self.normalize_dict = torch.load(f'./kms/normalize_dict_212.pth')
+        self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
+        self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
+        self.steps = 0
+        self.discount = discount
+        self.replay_regularization = 0.1
+    @property
+    def alpha(self):
+        return self.log_alpha.exp()
+    def orthogonal_regularization(model, reg_coef=1e-4):
+        """Orthogonal regularization v2.
+
+        See equation (3) in https://arxiv.org/abs/1809.11096.
+
+        Args:
+            model: A PyTorch model to apply regularization for.
+            reg_coef: Orthogonal regularization coefficient.
+
+        Returns:
+            A regularization loss term.
+        """
+        reg = 0
+        for layer in model.modules():
+            if isinstance(layer, nn.Linear):
+                weight = layer.weight
+                prod = torch.matmul(weight.t(), weight)
+                reg += torch.sum((prod * (1 - torch.eye(prod.shape[0], device=prod.device))) ** 2)
+        return reg * reg_coef
+    def loss_fn(self, expert_batch, replay_batch):
+        torch.autograd.set_detect_anomaly(True)
+        expert_state, expert_action, expert_next_state, reward, done, task, next_task = unpack_batch(expert_batch)
+        replay_state, replay_action, replay_next_state, reward, done, task, next_task = unpack_batch(replay_batch)
+
+        initial_state = expert_state
+        expert_input = torch.cat([expert_state, expert_action], -1)
+        rb_input = torch.cat([replay_state, replay_action], -1)
+
+        initial_dist = self.actor(initial_state)
+        initial_action = initial_dist.rsample()
+        expert_initial_input = torch.cat([initial_state, initial_action], -1)
+        expert_nu_0 = self.nu_net(expert_initial_input)
+        expert_linear_loss = (1-self.discount) * expert_nu_0.mean()
+
+        expert_next_dist = self.actor(expert_next_state)
+        rb_next_dist = self.actor(replay_next_state)
+        expert_next_action = expert_next_dist.rsample()
+        rb_next_action = rb_next_dist.rsample()
+        expert_next_input = torch.cat([expert_next_state, expert_next_action], -1)
+        rb_next_input = torch.cat([replay_next_state, rb_next_action], -1)
+        expert_next_nu = self.nu_net(expert_next_input)
+        rb_next_nu = self.nu_net(rb_next_input)
+
+
+        expert_nu = self.nu_net(expert_input)
+        rb_nu = self.nu_net(rb_input)
+        expert_diff = expert_nu - expert_next_nu * self.discount
+        rb_diff = rb_nu - rb_next_nu * self.discount
+        rb_linear_loss = rb_diff.mean()
+
+        linear_loss = expert_linear_loss * (1-self.replay_regularization) + \
+                            rb_linear_loss * self.replay_regularization
+        
+        rb_expert_diff = torch.cat([rb_diff, expert_diff], 0)
+        rb_expert_weights = torch.cat([torch.zeros_like(rb_diff), torch.ones_like(expert_diff)], 0)
+        non_linear_loss = torch.sum(torch.softmax(rb_expert_diff, dim=0).detach() * rb_expert_diff * rb_expert_weights, dim=0)
+
+        # Assuming nu_inter is a tensor and self.nu_net is a neural network model
+        # nu_inter = torch.cat([expert_input, expert_next_input], 0)
+        # nu_output = self.nu_net(nu_inter)
+
+        # Compute gradients
+        # nu_grad = torch.autograd.grad(outputs=nu_output, inputs=nu_inter, 
+        #                             grad_outputs=torch.ones_like(nu_output))[0]
+
+        # Compute gradient penalty
+        # nu_grad_penalty = torch.mean((torch.norm(nu_grad, dim=-1, keepdim=True) - 1) ** 2)
+        # actor_regularization = self.orthogonal_regularization(self.actor)
+
+        loss = non_linear_loss - expert_linear_loss
+        return loss, non_linear_loss, expert_linear_loss
+    
+
+    def train(self, expert_buffer, replay_buffer, batch_size):
+        expert_batch = expert_buffer.sample(batch_size)
+        replay_batch = replay_buffer.sample(batch_size)
+        nu_loss, non_linear_loss, linear_loss = self.loss_fn(expert_batch, replay_batch)
+        self.nu_optimizer.zero_grad()
+        nu_loss.backward()
+        self.nu_optimizer.step()
+        nu_loss, non_linear_loss, linear_loss = self.loss_fn(expert_batch, replay_batch)
+        pi_loss = -nu_loss
+        self.actor_optimizer.zero_grad()
+        pi_loss.backward()
+        self.actor_optimizer.step()
+        return {
+            'nu_loss': nu_loss.item(),
+            'pi_loss': pi_loss.item(),
+            'non_linear_loss': non_linear_loss.item(),
+            'linear_loss': linear_loss.item()
+        }
+    def generate_next_state(self, state, action):
+        original_action = action * self.action_std + self.action_mean
+        return state + original_action
 
 
 

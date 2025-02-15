@@ -13,6 +13,16 @@ from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
+from utils.util import unpack_batch
+def load_keymoseq_onetask(category, device='cuda:0'):
+  state_dim = 16
+  action_dim = 16
+  n_task = 20
+  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
+  replay_buffer_path = f'./kms/{category}_data_filtered.pth'
+  replay_buffer.load_state_dict(torch.load(replay_buffer_path))
+  print(f'Replay buffer loaded from {replay_buffer_path}')
+  return replay_buffer, state_dim, action_dim, n_task
 
 def load_keymoseq(category, device='cuda:0'):
   state_dim = 18
@@ -44,6 +54,9 @@ def load_halfcheetah():
   print(f'Replay buffer loaded from {replay_buffer_path}')
   return replay_buffer, state_dim, action_dim
 
+def to_numpy(*args):
+  return [x.cpu().detach().numpy() for x in args]
+
 EPS_GREEDY = 0.01
 
 if __name__ == "__main__":
@@ -67,6 +80,7 @@ if __name__ == "__main__":
   parser.add_argument("--lasso_coef", default=1e-3, type=float)
   parser.add_argument("--feature_lr", default=5e-4, type=float)
   parser.add_argument("--policy_lr", default=3e-4, type=float)
+  parser.add_argument("--start_timesteps", default=1e3, type=int)
   args = parser.parse_args()
 
   if args.alg == 'mulvdrq':
@@ -89,7 +103,8 @@ if __name__ == "__main__":
   # setup log 
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('train')
+  expert_buffer, state_dim, action_dim, n_task = load_keymoseq_onetask('train')
+  policy_buffer = buffer.ReplayBuffer(state_dim, action_dim, 100000)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):
     os.makedirs(save_path)
@@ -105,10 +120,10 @@ if __name__ == "__main__":
   kwargs = {
     "state_dim": state_dim,
     "action_dim": action_dim,
-    "action_space": gym.spaces.Box(-1, 1, (action_dim,), dtype=np.float32),
+    # "action_space": gym.spaces.Box(-1, 1, (action_dim,), dtype=np.float32),
     "discount": args.discount,
-    "tau": args.tau,
-    "hidden_dim": args.hidden_dim,
+    # "tau": args.tau,
+    # "hidden_dim": args.hidden_dim,
   }
 
   # Initialize policy
@@ -136,10 +151,20 @@ if __name__ == "__main__":
     kwargs['critic_and_actor_lr'] = args.policy_lr
     kwargs['critic_and_actor_hidden_dim'] = 256
     kwargs['feature_dim'] = args.feature_dim
-    kwargs['state_task_dataset'] = replay_buffer.state
+    # kwargs['state_task_dataset'] = replay_buffer.state
     kwargs['lasso_coef'] = args.lasso_coef
     kwargs['n_task'] = n_task
-    agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+    kwargs['learnable_temperature'] = False
+    kwargs['tau'] = args.tau
+    kwargs['hidden_dim'] = args.hidden_dim
+    # agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+    agent = spedersac_agent.QR_IRLAgent(**kwargs)
+  elif args.alg == 'value_dice':
+    kwargs['critic_and_actor_hidden_dim'] = 256
+    kwargs['target_update_period'] = 2
+    kwargs['alpha'] = 1
+    kwargs['device'] = 'cuda:0'
+    agent = spedersac_agent.ValueDICEAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
   # if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
@@ -163,46 +188,17 @@ if __name__ == "__main__":
   for t in range(int(args.max_timesteps)):
     
     episode_timesteps += 1
-    info = agent.train(replay_buffer, batch_size=args.batch_size)
-    # Select action randomly or according to policy
-    # if t < args.start_timesteps:
-    #   action = env.action_space.sample()
-    # else:
-      # action = agent.select_action(state, explore=True)
-      # epsilon greedy as mentioned in the CTRL paper
-      # if np.random.uniform(0, 1) < EPS_GREEDY:
-      #   action = env.action_space.sample()
-      # else:
-      #   action = agent.select_action(state, explore=True)
-
-    # Perform action
-    # next_state, reward, done, _ = env.step(action) 
-    # done_bool = float(done) if episode_timesteps < max_length else 0
-
-    # Store data in replay buffer
-    # replay_buffer.add(state, action, next_state, reward, done_bool)
-
-    # state = next_state
-    # episode_reward += reward
-    
-    # Train agent after collecting sufficient data
-    # if t >= args.start_timesteps:
-      # info = agent.train(replay_buffer, batch_size=args.batch_size)
-
-    # if done: 
-      # +1 to account for 0 indexing. +0 on ep_timesteps since it will increment +1 even if done=True
-      # print(f"Total T: {t+1} Episode Num: {episode_num+1} Episode T: {episode_timesteps} Reward: {episode_reward:.3f}")
-      # Reset environment
-      # state, done = env.reset(), False
-      # episode_reward = 0
-      # episode_timesteps = 0
-      # episode_num += 1 
-
-    # Evaluate episode
+    info = agent.train(expert_buffer, batch_size=args.batch_size)
+    # expert_batch = expert_buffer.sample(args.batch_size)
+    # state, action, next_state, reward, done, task, next_task = unpack_batch(expert_batch)
+    # policy_action = agent.actor.select_action(state)
+    # generate_next_state = agent.generate_next_state(state, policy_action)
+    # state, policy_action, generate_next_state, reward, done, task, next_task = to_numpy(state, policy_action, generate_next_state, reward, done, task, next_task)
+    # policy_buffer.add_batch(state, policy_action, generate_next_state, reward, done, task, next_task)
+    # if t > args.start_timesteps:
+    #   info = agent.train(expert_buffer, policy_buffer, batch_size=args.batch_size)
     if (t + 1) % args.eval_freq == 0:
       steps_per_sec = timer.steps_per_sec(t+1)
-      # evaluation = util.eval_policy(agent, eval_env)
-      # evaluations.append(evaluation)
 
 
       for key, value in info.items():

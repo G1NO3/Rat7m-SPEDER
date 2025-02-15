@@ -38,6 +38,48 @@ class ReplayBuffer(object):
 		self.ptr = (self.ptr + 1) % self.max_size
 		self.size = min(self.size + 1, self.max_size)
 
+	def add_batch(self, state, action, next_state, reward, done, task, next_task):
+		batch_size = state.shape[0]
+		if self.ptr + batch_size < self.max_size:
+			self.state[self.ptr:self.ptr+batch_size] = state
+			self.action[self.ptr:self.ptr+batch_size] = action
+			self.next_state[self.ptr:self.ptr+batch_size] = next_state
+			self.reward[self.ptr:self.ptr+batch_size] = reward
+			self.done[self.ptr:self.ptr+batch_size] = done
+			self.task[self.ptr:self.ptr+batch_size] = task
+			self.next_task[self.ptr:self.ptr+batch_size] = next_task
+			self.ptr += batch_size
+			self.size = min(self.size + batch_size, self.max_size)
+		elif self.ptr + batch_size == self.max_size:
+			self.state[self.ptr:] = state
+			self.action[self.ptr:] = action
+			self.next_state[self.ptr:] = next_state
+			self.reward[self.ptr:] = reward
+			self.done[self.ptr:] = done
+			self.task[self.ptr:] = task
+			self.next_task[self.ptr:] = next_task
+			self.ptr = 0
+			self.size = self.max_size
+		else:
+			overflow = self.ptr + batch_size - self.max_size
+			self.state[self.ptr:] = state[:-overflow]
+			self.action[self.ptr:] = action[:-overflow]
+			self.next_state[self.ptr:] = next_state[:-overflow]
+			self.reward[self.ptr:] = reward[:-overflow]
+			self.done[self.ptr:] = done[:-overflow]
+			self.task[self.ptr:] = task[:-overflow]
+			self.next_task[self.ptr:] = next_task[:-overflow]
+
+			self.state[:overflow] = state[-overflow:]
+			self.action[:overflow] = action[-overflow:]
+			self.next_state[:overflow] = next_state[-overflow:]
+			self.reward[:overflow] = reward[-overflow:]
+			self.done[:overflow] = done[-overflow:]
+			self.task[:overflow] = task[-overflow:]
+			self.next_task[:overflow] = next_task[-overflow:]
+			self.ptr = overflow
+			self.size = self.max_size
+
 
 	def sample(self, batch_size):
 		ind = np.random.randint(0, self.size, size=batch_size)

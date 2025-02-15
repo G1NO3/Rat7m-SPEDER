@@ -89,5 +89,10 @@ class DiagGaussianActor(nn.Module):
     self.outputs['mu'] = mu
     self.outputs['std'] = std
 
-    dist = SquashedNormal(mu, std)
+    dist = pyd.Normal(mu, std)
     return dist
+  def select_action(self, obs):
+    with torch.no_grad():
+      dist = self.forward(obs)
+      action = dist.rsample()
+      return action

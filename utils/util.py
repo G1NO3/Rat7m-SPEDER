@@ -114,7 +114,7 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
 	if hidden_depth == 0:
 		mods = [nn.Linear(input_dim, output_dim)]
 	else:
-		mods = [nn.Linear(input_dim, hidden_dim), nn.ELU(inplace=True), nn.BatchNorm1d(hidden_dim)]
+		mods = [nn.Linear(input_dim, hidden_dim), nn.ELU(inplace=True)]
 		for i in range(hidden_depth - 1):
 			mods += [nn.Linear(hidden_dim, hidden_dim), nn.ELU(inplace=True)]
 		mods.append(nn.Linear(hidden_dim, output_dim))
@@ -140,37 +140,109 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
 #         ])
 #         super().__init__(self.normal_dist, self.trunc_transform)
 
+class Norm1MLP(nn.Module):
+	def __init__(self, input_dim, hidden_dim, output_dim):
+		super().__init__()
+		self.l1 = nn.Linear(input_dim, hidden_dim)
+		self.l2 = nn.Linear(hidden_dim, output_dim)
+	def forward(self, x):
+		x = F.elu(self.l1(x))
+		x = F.elu(self.l2(x))
+		x = x / torch.linalg.norm(x, ord=2, dim=-1, keepdim=True)
+		return x
+
+class RFFMLP(nn.Module):
+	def __init__(self, input_dim, hidden_dim, output_dim):
+		super().__init__()
+		self.l0 = nn.Linear(input_dim, hidden_dim) #TODO:区分Phi和Mu并分别用[I I]和I初始化
+		# if input_dim == (2*hidden_dim):
+		# 	self.l0.weight.data = torch.cat([torch.eye(hidden_dim), torch.eye(hidden_dim)], dim=1)
+		# 	nn.init.constant_(self.l0.bias, 0)
+		# elif input_dim == hidden_dim:
+		# 	nn.init.eye_(self.l0.weight)
+		# 	nn.init.constant_(self.l0.bias,0)
+		# else:
+		# 	print(input_dim==2*hidden_dim)
+		# 	print(input_dim-2*hidden_dim)
+		# 	print('input:',input_dim,type(input_dim),'hidden_dim',hidden_dim,type(hidden_dim))
+		# 	raise NotImplementedError
+		nn.init.normal_(self.l0.weight, mean=0, std=1)
+		nn.init.normal_(self.l0.bias, mean=0, std=1)
+		self.l1 = nn.Linear(hidden_dim, output_dim)  # random feature
+		nn.init.normal_(self.l1.weight, mean=0, std=1)
+		nn.init.normal_(self.l1.bias, mean=0, std=1)
+		print('Initialize')
+		print(self.l1.weight.shape, self.l1.weight.mean(), self.l1.weight.std())
+		print(self.l1.bias.shape, self.l1.bias.mean(), self.l1.bias.std())
+		self.l1.weight.requires_grad_(False)
+		self.l1.bias.requires_grad_(False)
+	def forward(self, phi_feed_feature):
+		z1 = self.l0(phi_feed_feature)
+		z2 = torch.cos(self.l1(z1))
+		return z2
+	
+class RFFMLP_notrain(nn.Module):
+	def __init__(self, input_dim, output_dim):
+		super().__init__()
+		self.l1 = nn.Linear(input_dim, output_dim)  # random feature
+		nn.init.normal_(self.l1.weight, mean=0, std=5)
+		nn.init.normal_(self.l1.bias, mean=0, std=5)
+		print('Initialize')
+		print(self.l1.weight.shape, self.l1.weight.mean(), self.l1.weight.std())
+		print(self.l1.bias.shape, self.l1.bias.mean(), self.l1.bias.std())
+		self.l1.weight.requires_grad_(False)
+		self.l1.bias.requires_grad_(False)
+	def forward(self, phi_feed_feature):
+		z2 = torch.cos(self.l1(phi_feed_feature))
+		return z2
+
+class RFF_complex_critic(nn.Module):
+	def __init__(self, feature_dim, hidden_dim):
+		super().__init__()
+		self.l1 = nn.Linear(feature_dim, hidden_dim)  # random feature
+		self.l2_1 = nn.Linear(hidden_dim, hidden_dim)
+		self.l3_1 = nn.Linear(hidden_dim, 1)
+		self.l2_2 = nn.Linear(hidden_dim, hidden_dim)
+		self.l3_2 = nn.Linear(hidden_dim, 1)
+	def forward(self, critic_feed_feature):
+		z1 = torch.cos(self.l1(critic_feed_feature))
+		z2_1 = F.elu(self.l2_1(z1))
+		z3_1 = self.l3_1(z2_1)
+		z2_2 = F.elu(self.l2_2(z1))
+		z3_2 = self.l3_2(z2_2)
+		q = z3_1 * z3_2
+		return q
 
 class RFFCritic(nn.Module):
 
-    def __init__(self, feature_dim, hidden_dim):
-        super().__init__()
+	def __init__(self, feature_dim, hidden_dim):
+		super().__init__()
 
         # Q1
-        self.l1 = nn.Linear(feature_dim, hidden_dim)  # random feature
-        self.l2 = nn.Linear(hidden_dim, hidden_dim)
-        self.l3 = nn.Linear(hidden_dim, 1)
+		self.l1 = nn.Linear(feature_dim, hidden_dim)  # random feature
+		self.l2 = nn.Linear(hidden_dim, hidden_dim)
+		self.l3 = nn.Linear(hidden_dim, 1)
 
         # Q2
-        self.l4 = nn.Linear(feature_dim, hidden_dim)  # random feature
-        self.l5 = nn.Linear(hidden_dim, hidden_dim)
-        self.l6 = nn.Linear(hidden_dim, 1)
+		self.l4 = nn.Linear(feature_dim, hidden_dim)  # random feature
+		self.l5 = nn.Linear(hidden_dim, hidden_dim)
+		self.l6 = nn.Linear(hidden_dim, 1)
 
-        self.outputs = dict()
+		self.outputs = dict()
 
-    def forward(self, critic_feed_feature):
-        q1 = torch.sin(self.l1(critic_feed_feature))
-        q1 = F.elu(self.l2(q1))
-        q1 = self.l3(q1)
+	def forward(self, critic_feed_feature):
+		q1 = torch.sin(self.l1(critic_feed_feature))
+		q1 = F.elu(self.l2(q1))
+		q1 = self.l3(q1)
 
-        q2 = torch.sin(self.l4(critic_feed_feature))
-        q2 = F.elu(self.l5(q2))
-        q2 = self.l6(q2)
+		q2 = torch.sin(self.l4(critic_feed_feature))
+		q2 = F.elu(self.l5(q2))
+		q2 = self.l6(q2)
 
-        self.outputs['q1'] = q1
-        self.outputs['q2'] = q2
+		self.outputs['q1'] = q1
+		self.outputs['q2'] = q2
 
-        return q1, q2
+		return q1, q2
 
 
 class Theta(nn.Module):

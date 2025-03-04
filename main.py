@@ -17,9 +17,9 @@ from utils.util import unpack_batch
 def load_keymoseq(category, device='cuda:0'):
   state_dim = 16
   action_dim = 16
-  n_task = 20
+  n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  replay_buffer_path = f'./kms/{category}_data_filtered.pth'
+  replay_buffer_path = f'./kms/{category}_data.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
   return replay_buffer, state_dim, action_dim, n_task
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     kwargs['phi_hidden_dim'] = 512
     kwargs['phi_hidden_depth'] = 1
     kwargs['mu_hidden_dim'] = 512
-    kwargs['mu_hidden_depth'] = 0
+    kwargs['mu_hidden_depth'] = 1
     kwargs['critic_and_actor_lr'] = args.policy_lr
     kwargs['critic_and_actor_hidden_dim'] = 256
     kwargs['feature_dim'] = args.feature_dim
@@ -146,8 +146,9 @@ if __name__ == "__main__":
     kwargs['learnable_temperature'] = False
     kwargs['tau'] = args.tau
     kwargs['hidden_dim'] = args.hidden_dim
-    # agent = spedersac_agent.SPEDERSACAgent(**kwargs)
-    agent = spedersac_agent.QR_IRLAgent(**kwargs)
+    agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+    # agent = spedersac_agent.QR_IRLAgent(**kwargs)
+    # agent = spedersac_agent.SimpleWorldModel(**kwargs)
   elif args.alg == 'value_dice':
     kwargs['critic_and_actor_hidden_dim'] = 256
     kwargs['target_update_period'] = 2
@@ -156,15 +157,19 @@ if __name__ == "__main__":
     agent = spedersac_agent.ValueDICEAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
-  # if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
-  #   pretrained_dir_name = 'dim64_sa_sp_buffer_18body_normalized_lasso1e-2_xyz_group'
-  #   pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
-  #   agent.load_phi_mu(torch.load(pretrained_model_path))
-  #   print(f'Model loaded from {pretrained_model_path}')
-  #   if args.dir.endswith('fixf'):
-  #     print('Fix Phi and Mu')
-  #   else:
-  #     print('Finetune Phi')
+  if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
+    pretrained_dir_name = 'SPEDER_keymoseq_augment_dataset_allznorm_sasprime_contrastive'
+    # pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+    # agent.load_phi_mu(torch.load(pretrained_model_path))
+    # print(f'Phi Mu loaded from {pretrained_model_path}')
+    actor_dir_name = pretrained_dir_name + '_actor'
+    actor_model_path = f'./model/{args.env}/{args.alg}/{actor_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+    agent.load_actor(torch.load(actor_model_path))
+    print(f'Actor loaded from {actor_model_path}')
+    # if args.dir.endswith('fixf'):
+    #   print('Fix Phi and Mu')
+    # else:
+    #   print('Finetune Phi')
 
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]

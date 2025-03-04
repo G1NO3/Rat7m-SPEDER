@@ -8,7 +8,7 @@ import os
 
 # from utils.util import unpack_batch, RunningMeanStd
 from utils.util import unpack_batch
-from utils.util import MLP, DoubleMLP
+from utils.util import MLP, DoubleMLP, RFFCritic, Theta, RFFMLP, RFF_complex_critic, RFFMLP_notrain, Norm1MLP
 
 from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor
@@ -47,7 +47,7 @@ class SPEDERSACAgent():
             use_feature_target=True,
             extra_feature_steps=1,
             device='cuda:0',
-            state_task_dataset=None,
+            state_dataset=None,
             lasso_coef=1e-3,
             n_task=3,
             learnable_temperature=False,
@@ -89,26 +89,40 @@ class SPEDERSACAgent():
         self.learnable_temperature = learnable_temperature
         self.target_update_period = target_update_period
         self.tau = tau
-        self.normalize_dict = torch.load(f'./kms/normalize_dict_214.pth')
+        self.normalize_dict = torch.load(f'./kms/normalize_dict.pth')
         self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
         self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
         self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
         self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
+        self.state_min = torch.FloatTensor(self.normalize_dict['state_min']).to(device)
+        self.state_max = torch.FloatTensor(self.normalize_dict['state_max']).to(device)
+        self.action_min = torch.FloatTensor(self.normalize_dict['action_min']).to(device)
+        self.action_max = torch.FloatTensor(self.normalize_dict['action_max']).to(device)
+        self.obs_dict = pyd.uniform.Uniform(low=self.state_min, high=self.state_max)
         # for key, value in self.normalize_dict.items():
         #     self.normalize_dict[key] = torch.FloatTensor(value).to(self.device)
-        self.phi = MLP(input_dim=state_dim + action_dim,
+        self.phi = Norm1MLP(input_dim=state_dim + action_dim,
                        output_dim=feature_dim,
-                       hidden_dim=phi_hidden_dim,
-                       hidden_depth=phi_hidden_depth).to(device)
-
+                       hidden_dim=phi_hidden_dim).to(device)
+        # self.phi = RFFMLP(input_dim=state_dim + action_dim,
+        #                   hidden_dim=state_dim,
+        #                   output_dim=feature_dim).to(device)
         if use_feature_target:
             self.phi_target = copy.deepcopy(self.phi)
-
-        self.mu = MLP(input_dim=state_dim,
-                      output_dim=feature_dim,
-                      hidden_dim=mu_hidden_dim,
-                      hidden_depth=mu_hidden_depth).to(device)
-
+        self.mu = Norm1MLP(input_dim=state_dim,
+                        output_dim=feature_dim,
+                        hidden_dim=mu_hidden_dim).to(device)
+        # self.mu = RFFMLP(input_dim=state_dim,
+                        #  hidden_dim=state_dim,
+                    #   output_dim=feature_dim).to(device)
+        # self.mu.l1.weight.data = copy.deepcopy(self.phi.l1.weight.data)
+        # self.mu.l1.bias.data = copy.deepcopy(self.phi.l1.bias.data)
+        # print('l0 phi grad:', self.phi.l0.weight.requires_grad, self.phi.l0.bias.requires_grad)
+        # print('l0 mu grad:', self.mu.l0.weight.requires_grad, self.mu.l0.bias.requires_grad)
+        # print('phi grad:', self.phi.l1.weight.requires_grad, self.phi.l1.bias.requires_grad)
+        # print('mu grad:', self.mu.l1.weight.requires_grad, self.mu.l1.bias.requires_grad)
+        # assert torch.isclose(self.phi.l1.weight, self.mu.l1.weight).all()
+        # assert torch.isclose(self.phi.l1.bias, self.mu.l1.bias).all()
         # self.theta = Theta(feature_dim=feature_dim).to(device)
 
         self.feature_optimizer = torch.optim.Adam(
@@ -121,16 +135,18 @@ class SPEDERSACAgent():
             hidden_depth=2,
             log_std_bounds=[-5., 2.],
         ).to(device)
-        # self.critic = RFFCritic(feature_dim=feature_dim, hidden_dim=critic_and_actor_hidden_dim).to(device)
-        self.critic = DoubleMLP(input_dim=self.n_task,
-                          output_dim=feature_dim,
-                          hidden_dim=critic_and_actor_hidden_dim,
-                            hidden_depth=1).to(device)
+        # self.critic = RFFCritic(feature_dim=feature_dim+n_task, hidden_dim=critic_and_actor_hidden_dim).to(device)
+        # self.critic = DoubleMLP(input_dim=self.n_task,
+        #                   output_dim=feature_dim,
+        #                   hidden_dim=critic_and_actor_hidden_dim,
+        #                     hidden_depth=1).to(device)
+        self.critic = RFF_complex_critic(feature_dim=state_dim+n_task, hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
                      hidden_depth=1).to(device)
+        # self.theta = Theta(feature_dim=feature_dim).to(device)
         self.actor_optimizer = torch.optim.Adam(list(self.actor.parameters()),
                                                 weight_decay=0, lr=critic_and_actor_lr,
                                                 betas=[0.9, 0.999])  # lower lr for actor/alpha
@@ -139,7 +155,15 @@ class SPEDERSACAgent():
 
         self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.w.parameters())+list(self.phi.parameters()),
                                                  weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
-
+    
+    def rescale_state_back(self, state):
+        return state * self.state_std + self.state_mean
+    def rescale_action_back(self, action):
+        return action * self.action_std + self.action_mean
+    def rescalse_state(self, state):
+        return (state - self.state_mean) / self.state_std
+    def rescale_action(self, action):
+        return (action - self.action_mean) / self.action_std
     @property
     def alpha(self):
         return self.log_alpha.exp()
@@ -194,34 +218,48 @@ class SPEDERSACAgent():
         assert z_phi.shape[-1] == self.feature_dim
         assert z_mu_next.shape[-1] == self.feature_dim
 
-        model_loss_pt1 = -2 * torch.diag(z_phi @ z_mu_next.T)  # check if need to sum
+        # model_loss_pt1 = -2 * torch.diag(z_phi @ z_mu_next.T)  # check if need to sum
 
-        model_loss_pt2_a = z_phi_random @ z_mu_next.T
-        model_loss_pt2 = model_loss_pt2_a @ model_loss_pt2_a.T
+        # model_loss_pt2_a = z_phi_random @ z_mu_next_random.T
+        # model_loss_pt2 = model_loss_pt2_a @ model_loss_pt2_a.T
 
-        model_loss_pt1_summed = 1. / torch.numel(model_loss_pt1) * torch.sum(model_loss_pt1)
-        model_loss_pt2_summed = 1. / torch.numel(model_loss_pt2) * torch.sum(model_loss_pt2)
+        # model_loss_pt1_summed = 1. / torch.numel(model_loss_pt1) * torch.sum(model_loss_pt1)
+        # model_loss_pt2_summed = 1. / torch.numel(model_loss_pt2) * torch.sum(model_loss_pt2)
 
-        model_loss = model_loss_pt1_summed + model_loss_pt2_summed
+        # model_loss = model_loss_pt1_summed + model_loss_pt2_summed
 
 
-        W = self.phi.trunk[0].weight
-        assert W.shape == (self.phi_hidden_dim, self.state_dim + self.action_dim)
-        group_by_coordinate_W = W.reshape(self.phi_hidden_dim, (self.state_dim + self.action_dim)//2, 2)
-        group_lasso = torch.sqrt(group_by_coordinate_W.pow(2).sum(-1).sum(0)).sum()
+        # W = self.phi.trunk[0].weight
+        # assert W.shape == (self.phi_hidden_dim, self.state_dim + self.action_dim)
+        # group_by_coordinate_W = W.reshape(self.phi_hidden_dim, (self.state_dim + self.action_dim)//2, 2)
+        # group_lasso = torch.sqrt(group_by_coordinate_W.pow(2).sum(-1).sum(0)).sum()
         # print('W', W.shape)
-
-        loss = model_loss + group_lasso * self.lasso_coef
+        # positive_ll = torch.sum(z_phi * z_mu_next, dim=-1)
+        # positive_loss = torch.nn.BCEWithLogitsLoss()(positive_ll, torch.ones_like(positive_ll))
+        ll_ctrl = z_phi @ z_mu_next.T
+        loss_ctrl = torch.nn.CrossEntropyLoss()(ll_ctrl, torch.eye(state.shape[0]).to(self.device))
+        # negative_ll_1 = (z_phi_random @ z_mu_next.T).mean()
+        # negative_ll_1 = torch.sum(z_phi_random * z_mu_next, dim=-1)
+        # negative_loss_1 = torch.nn.BCEWithLogitsLoss()(negative_ll_1, torch.zeros_like(negative_ll_1))
+        # negative_ll_2 = (z_phi @ z_mu_next_random.T).mean()
+        # negative_ll_2 = torch.sum(z_phi * z_mu_next_random, dim=-1)
+        # negative_loss_2 = torch.nn.BCEWithLogitsLoss()(negative_ll_2, torch.zeros_like(negative_ll_2))
+        loss = loss_ctrl
         # print('model_loss', model_loss)
         self.feature_optimizer.zero_grad()
         loss.backward()
         self.feature_optimizer.step()
 
         return {
-            'total_loss': loss.item(),
-            'model_loss': model_loss.item(),
-            'group_lasso': group_lasso.item(),
+            # 'total_loss': loss.item(),
+            # 'model_loss': model_loss.item(),
+            # 'group_lasso': group_lasso.item(),
             # 'prob_loss': prob_loss.item(),
+            # 'positive_ll': positive_loss.item(),
+            # 'negative_ll_1': negative_loss_1.item(),
+            # 'negative_ll_2': negative_loss_2.item(),
+            'loss_ctrl': loss_ctrl.item(),
+            'loss': loss.item(),
         }
 
     def update_feature_target(self):
@@ -254,19 +292,26 @@ class SPEDERSACAgent():
         expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().reshape(-1)].to(self.device)
         assert expert_next_task_onehot.shape == (expert_state.shape[0], self.n_task)
         # calculate r
-        z_phi = self.phi(torch.concat([expert_state, expert_action], -1)) # only need gradient in this place
-        w_batch = self.w(expert_task_onehot)
-        r = torch.sum(z_phi * w_batch, dim=-1, keepdim=True)
+        # z_phi = self.phi(torch.concat([expert_state, expert_action], -1)) # only need gradient in this place
+        # print(z_phi)
+        # w_batch = self.w(expert_task_onehot)
+        # r = torch.sum(z_phi * w_batch, dim=-1, keepdim=True)
+        s_a_feature = self.rescale_state_back(expert_state) + self.rescale_action_back(expert_action)
+        q = self.critic(torch.cat([s_a_feature, expert_task_onehot], -1))
+        SAC_loss = -q.mean()
+        l2_loss = 0.01 * (q.pow(2).mean())
+        # r = self.theta(z_phi)
         # calculate target
-        target_q = r + (1 - expert_done) * self.discount * self.get_targetV(expert_next_state, expert_next_task_onehot).detach()
+        # target_q = r + (1 - expert_done) * self.discount * self.get_targetV(expert_next_state, expert_next_task_onehot).detach()
 
-        u1, u2 = self.critic(expert_task_onehot)
-        q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True).detach() # irrelevant to critic
-        q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True).detach() # irrelevant to critic
-        q1_loss = F.mse_loss(target_q, q1)
-        q2_loss = F.mse_loss(target_q, q2)
-        qr_loss = q1_loss + q2_loss
-
+        # u1, u2 = self.critic(expert_task_onehot)
+        # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
+        # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
+        # q1, q2 = self.critic(torch.cat([z_phi, expert_task_onehot], -1))
+        # q1_loss = F.mse_loss(target_q, q1)
+        # q2_loss = F.mse_loss(target_q, q2)
+        # qr_loss = (q1_loss + q2_loss) / 2
+        # l2_loss = 0.5 * (q1.pow(2).mean() + q2.pow(2).mean()) + 0.5 * (r.pow(2).mean())
         ##IQ Learn loss
         # iq_alpha = 0.5
         
@@ -307,108 +352,51 @@ class SPEDERSACAgent():
         # print('loss_3:', loss_3.item())
         ##
         # SAC loss
-        expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
-        dist = self.actor(expert_state_task)
-        sample_action = dist.rsample()
-        sample_log_prob = dist.log_prob(sample_action).sum(-1, keepdim=True)
-
-        z_phi_sample = self.phi(torch.concat([expert_state, sample_action], -1))
+        # expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
+        # dist = self.actor(expert_state_task)
+        # sample_action = dist.sample()
+        # sample_log_prob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+        # print('sample_log_prob:', sample_log_prob)
+        # z_phi_sample = self.phi(torch.concat([expert_state, sample_action], -1))
 
         # u1, u2 = self.critic(expert_task_onehot) # irrelevant to critic
-        sample_q1 = torch.sum(z_phi_sample * u1, dim=-1, keepdim=True)
-        sample_q2 = torch.sum(z_phi_sample * u2, dim=-1, keepdim=True)
-        sample_q = torch.min(sample_q1, sample_q2)
+        # sample_q1 = torch.sum(z_phi_sample * u1, dim=-1, keepdim=True)
+        # sample_q2 = torch.sum(z_phi_sample * u2, dim=-1, keepdim=True)
+        # sample_q1, sample_q2 = self.critic(torch.cat([z_phi_sample, expert_task_onehot], -1))
+        # sample_q = torch.min(sample_q1, sample_q2)
 
-        SAC_loss = ((self.alpha) * sample_log_prob - sample_q).mean()
+        # SAC_loss = ((self.alpha) * sample_log_prob - sample_q).mean()
 
-        u1_l1_loss = torch.abs(u1).mean()
-        u2_l1_loss = torch.abs(u2).mean()
-        w_l1_loss = torch.abs(w_batch).mean(-1).norm(2,dim=0)
-
+        # u1_l1_loss = torch.abs(u1).mean()
+        # u2_l1_loss = torch.abs(u2).mean()
+        # w_l1_loss = torch.abs(w_batch).mean(-1).norm(2,dim=0)
+        # l2_loss = 0.5 * (q1.pow(2).mean() + q2.pow(2).mean()) + 0.5 * (r.pow(2).mean())
         # l1_loss = (u1_l1_loss + u2_l1_loss + w_l1_loss) * 0.2
 
         #
-        loss = qr_loss + SAC_loss
+        loss = SAC_loss + l2_loss
         # print('q_loss', q_loss)
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()
 
         return {
-            'q1_loss': q1_loss.item(),
-            'q2_loss': q2_loss.item(),
-            'q1': q1.mean().item(),
-            'q2': q2.mean().item(),
+            # 'q1_loss': q1_loss.item(),
+            # 'q2_loss': q2_loss.item(),
+            # 'q1': q1.mean().item(),
+            # 'q2': q2.mean().item(),
+            'SAC_loss': SAC_loss.item(),
+            # 'qr_loss': qr_loss.item(),
+            'l2_loss': l2_loss.item(),
             # 'l1_loss': l1_loss.item(),
-            'w_l1_loss': w_l1_loss.item(),
-            'u1_l1_loss': u1_l1_loss.item(),
+            # 'w_l1_loss': w_l1_loss.item(),
+            # 'u1_l1_loss': u1_l1_loss.item(),
             # 'iql_loss_1': loss_1.item(),
             # 'iql_loss_2': loss_2.item(),
             # 'iql_loss_3': loss_3.item(),
             # 'iql_loss': iql_loss.item(),
         }
 
-    def another_critic_step(self, batch):       
-        """
-        Critic update step
-        """
-        state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
-        assert state.shape[-1] == self.state_dim
-        assert action.shape[-1] == self.action_dim
-        assert next_state.shape[-1] == self.state_dim
-        assert done.shape[-1] == 1
-        task_onehot = torch.eye(self.n_task)[task.long().reshape(-1)].to(self.device)
-        assert task_onehot.shape == (state.shape[0], self.n_task)
-        next_task_onehot = torch.eye(self.n_task)[next_task.long().reshape(-1)].to(self.device)
-        assert next_task_onehot.shape == (state.shape[0], self.n_task)
-
-        # critic step, iql loss
-        z_phi = self.phi(torch.concat([state, action], -1))
-        u1, u2 = self.critic(task_onehot)
-        q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
-        q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-        next_v = self.get_targetV(next_state, next_task_onehot).detach()
-        current_v = self.getV(state, task_onehot)
-        q = torch.min(q1, q2)
-        # iq_loss_1 = self.iq_loss(q1, current_v, next_v, done)
-        # iq_loss_2 = self.iq_loss(q2, current_v, next_v, done)
-        iq_alpha = 0.5
-        y = (1 - done) * self.discount * next_v
-        r = q - y
-        loss_1 = -r.mean()
-        loss_2 = (current_v - y).mean()
-        loss_3 = 1/(4*iq_alpha) * (r**2).mean()
-        # iq_loss = (iq_loss_1 + iq_loss_2) / 2
-
-        # r step, w update
-        w_batch = self.w(task_onehot)
-        r_phiw = torch.sum(z_phi * w_batch, dim=-1, keepdim=True)
-        target_q = self.get_targetQ(state, action, task_onehot)
-        target_r = target_q.detach() - (1 - done) * self.discount * next_v
-        r_loss = F.mse_loss(r_phiw, target_r)
-        
-        # l1 loss
-        u1_l1_loss = torch.abs(u1).mean()
-        u2_l1_loss = torch.abs(u2).mean()
-        w_l1_loss = torch.abs(w_batch).mean()
-        l1_loss = (u1_l1_loss + u2_l1_loss) / 3
-
-        # update
-        loss = iq_loss + r_loss
-        self.critic_optimizer.zero_grad()
-        loss.backward()
-        self.critic_optimizer.step()
-
-        return {
-            # 'iq_loss_1': iq_loss_1.item(),
-            # 'iq_loss_2': iq_loss_2.item(),
-            'iq_loss': iq_loss.item(),
-            'q1': q1.mean().item(),
-            'q2': q2.mean().item(),
-            'l1_loss': l1_loss.item(),
-            # 'w_l1_loss': w_l1_loss.item(),
-            'u1_l1_loss': u1_l1_loss.item(),
-        }
     def update_actor_and_alpha(self, batch):
         """
         Actor update step
@@ -464,12 +452,14 @@ class SPEDERSACAgent():
 
 
     def state_dict(self):
-        return {'actor': self.actor.state_dict(),
+        module_list = {'actor': self.actor.state_dict(),
 				'critic': self.critic.state_dict(),
 				'log_alpha': self.log_alpha,
 				'phi': self.phi.state_dict(),
 				'mu': self.mu.state_dict(),
                 'w': self.w.state_dict()}
+        print('state dict keys:', module_list.keys())
+        return module_list
     def load_state_dict(self, state_dict):
         self.actor.load_state_dict(state_dict['actor'])
         self.critic.load_state_dict(state_dict['critic'])
@@ -483,6 +473,9 @@ class SPEDERSACAgent():
         self.phi.load_state_dict(state_dict['phi'])
         self.mu.load_state_dict(state_dict['mu'])
 
+    def load_actor(self, state_dict):
+        self.actor.load_state_dict(state_dict['actor'])
+
     def train(self, buffer, batch_size):
         """
         One train step
@@ -490,17 +483,16 @@ class SPEDERSACAgent():
         self.steps += 1
 
         # Feature step
-        for _ in range(self.extra_feature_steps + 1):
-            batch_1 = buffer.sample(batch_size)
-            batch_2 = buffer.sample(batch_size)
-            s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
-            # s_random = st_random[:, :self.state_dim]
-            # s_prime_random = self.obs_dist.sample((batch_size,)).to(self.device)
-            feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
+        # for _ in range(self.extra_feature_steps + 1):
+        batch_1 = buffer.sample(batch_size)
+        batch_2 = buffer.sample(batch_size)
+        s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
+        # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
+        feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
             # Update the feature network if needed
-            if self.use_feature_target:
-                self.update_feature_target()
+            # if self.use_feature_target:
+                # self.update_feature_target()
         # batch_1 = buffer.sample(batch_size)
         # Critic step, IRL
         # critic_info = self.critic_step(batch_1)
@@ -509,7 +501,7 @@ class SPEDERSACAgent():
         # actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
-        # self.update_target()
+        self.update_target()
 
         return {
             **feature_info,
@@ -517,43 +509,39 @@ class SPEDERSACAgent():
             # **actor_info,
         }
     
-    def log_likelihood(self, state, action, next_state, kde=False):
+    def state_likelihood(self, state, action, next_state, kde=False):
         # output the device
+        self.phi.eval()
+        self.mu.eval()
         with torch.no_grad():
+            assert state.shape == action.shape == next_state.shape
             state = state.to(self.device)
             action = action.to(self.device)
             next_state = next_state.to(self.device)
             z_phi = self.phi(torch.concat([state, action], -1))
             z_mu_next = self.mu(next_state)
-            # next_state_p0 = self.obs_dist.log_prob(next_state).sum(-1, keepdim=True).exp()
-            # print('next_state_p0', next_state_p0.mean(0))
-            # if kde == False:
-            #     next_state_gaussian_aux = 1/torch.sqrt(2*torch.tensor([torch.pi])) * torch.exp(-0.5*next_state**2)
-            #     next_state_gaussian = torch.prod(next_state_gaussian_aux, dim=-1)  
-            # else:
-            #     pass #TODO
-            # print(z_phi)
-            # print(z_mu_next)
-            # print(next_state)
-            # print(next_state_gaussian)
-            # print(torch.sum(z_phi*z_mu_next, dim=-1))
-            likelihood = torch.sum(z_phi*z_mu_next, dim=-1)
-            # print(likelihood)
-        return likelihood.mean()
-    
+            loglikelihood = (torch.sum(z_phi*z_mu_next, dim=-1))
+        return loglikelihood, z_phi, z_mu_next
+
     def action_loglikelihood(self, state, action, task):
         task_onehot = torch.eye(self.n_task)[task.long().reshape(-1)].to(self.device)
-        state_task = torch.cat([state, task_onehot], -1)
+        # state_task = torch.cat([state, task_onehot], -1)
 
-        dist = self.actor(state_task)
-        actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
-        z_phi = self.phi(torch.concat([state, action], -1))
-        u1, u2 = self.critic(task_onehot)
-        q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
-        q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-        q = torch.min(q1, q2)
+        # dist = self.actor(state_task)
+        # print('dist_mean:', dist.loc[0])
+        # print(dist.scale)
+        # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+        # z_phi = self.phi(torch.concat([state, action], -1))
+        # u1, u2 = self.critic(task_onehot)
+        # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
+        # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
+        # q = torch.min(q1, q2)
 
-        return actor_log_prob.mean()
+        s_a_feature = self.rescalse_state(self.rescale_state_back(state) + self.rescale_action_back(action))
+        q = self.critic(torch.cat([s_a_feature, task_onehot], -1))
+        actor_log_prob = q
+
+        return actor_log_prob, q
     
     def generate_next_state(self, state, action):
         state_max, state_min = self.normalize_dict['state_max'], self.normalize_dict['state_min']
@@ -631,7 +619,7 @@ class QR_IRLAgent():
         self.learnable_temperature = learnable_temperature
         self.target_entropy = -action_dim
         self.actor = DiagGaussianActor(
-            obs_dim=state_dim + n_task,
+            obs_dim=state_dim,
             action_dim=action_dim,
             hidden_dim=hidden_dim,
             hidden_depth=2,
@@ -708,7 +696,8 @@ class QR_IRLAgent():
     def update_actor_and_alpha(self, batch):
         state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
         task_onehot = self.task_all[task.long().reshape(-1)].to(self.device)
-        dist = self.actor(torch.cat([state, task_onehot], -1))
+        # dist = self.actor(torch.cat([state, task_onehot], -1))
+        dist = self.actor(state)
         # sample_action = dist.rsample()
         # sample_q1, sample_q2 = self.getQ(state, sample_action)
         # sample_q = torch.min(sample_q1, sample_q2)
@@ -753,7 +742,9 @@ class QR_IRLAgent():
     def action_loglikelihood(self, state, action, task):
         self.actor.eval()
         task_onehot = self.task_all[task.long().squeeze(1)].to(self.device)
-        dist = self.actor(torch.cat([state, task_onehot], -1))
+        # dist = self.actor(torch.cat([state, task_onehot], -1))
+        dist = self.actor(state)
+        print(dist.scale)
         actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         return actor_log_prob.mean()
 
@@ -776,7 +767,8 @@ class QR_IRLAgent():
             print('next_state:', next_state.shape)
             print(task)
             task_onehot = self.task_all[task].to(self.device).unsqueeze(0)
-            dist = self.actor(torch.cat([next_state, task_onehot], -1))
+            # dist = self.actor(torch.cat([next_state, task_onehot], -1))
+            dist = self.actor(next_state)
             next_action = dist.sample()
             # q1, q2 = self.getQ(next_state, next_action)
             # q = torch.min(q1, q2)
@@ -917,5 +909,221 @@ class ValueDICEAgent():
         original_action = action * self.action_std + self.action_mean
         return state + original_action
 
+class SimpleWorldModel():
+    """
+    SAC with VAE learned latent features
+    """
 
+    def __init__(
+            self,
+            state_dim,
+            action_dim,
+            action_space=None,
+            phi_and_mu_lr=-1,
+            # 3e-4 was originally proposed in the paper, but seems to results in fluctuating performance
+            phi_hidden_dim=-1,
+            phi_hidden_depth=-1,
+            mu_hidden_dim=-1,
+            mu_hidden_depth=-1,
+            critic_and_actor_lr=-1,
+            critic_and_actor_hidden_dim=-1,
+            discount=0.99,
+            target_update_period=2,
+            tau=0.005,
+            alpha=0.1,
+            auto_entropy_tuning=True,
+            hidden_dim=1024,
+            feature_tau=0.005,
+            feature_dim=2048,  # latent feature dim
+            use_feature_target=True,
+            extra_feature_steps=1,
+            device='cuda:0',
+            state_task_dataset=None,
+            lasso_coef=1e-3,
+            n_task=3,
+            learnable_temperature=False,
+    ):
+        self.steps = 0
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.discount = discount
+        self.device = device
+        self.n_task = n_task
+        self.normalize_dict = torch.load(f'./kms/normalize_dict_allnormalized_augment.pth')
+        self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
+        self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
+        self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
+        self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
+        self.state_min = torch.FloatTensor(self.normalize_dict['state_min']).to(device)
+        self.state_max = torch.FloatTensor(self.normalize_dict['state_max']).to(device)
+        self.action_min = torch.FloatTensor(self.normalize_dict['action_min']).to(device)
+        self.action_max = torch.FloatTensor(self.normalize_dict['action_max']).to(device)
 
+        self.p_sprime = pyd.Normal(loc=torch.zeros(state_dim).to(device), scale=torch.ones(state_dim).to(device))
+        # self.likelihood_network = DiagGaussianActor(
+        #     obs_dim=state_dim + action_dim,
+        #     action_dim=state_dim,
+        #     hidden_dim=hidden_dim,
+        #     hidden_depth=1,
+        #     log_std_bounds=[-10., 2.],
+        # ).to(device)
+        self.likelihood_network = MLP(input_dim=state_dim + action_dim + state_dim,
+                                                           output_dim=1,
+                                                           hidden_dim=hidden_dim,
+                                                           hidden_depth=2).to(device)
+        self.likelihood_optimizer = torch.optim.Adam(list(self.likelihood_network.parameters()),
+                                                    weight_decay=0, lr=1e-4, betas=[0.9, 0.999])
+
+    # def likelihood_step(self, batch):
+    #     state, action, next_state, reward, _, task, next_task = unpack_batch(batch)
+    #     log_prob_sprime = self.log_likelihood(state, action, next_state)
+    #     # print(log_prob_sprime)
+    #     negll = -log_prob_sprime.mean()
+    #     self.likelihood_optimizer.zero_grad()
+    #     negll.backward()
+    #     self.likelihood_optimizer.step()
+    #     return {
+    #         'negll': negll.item()
+    #     }
+    # def log_likelihood(self, state, action, next_state):
+    #     assert state.shape[-1] == self.state_dim
+    #     assert action.shape[-1] == self.action_dim
+    #     assert next_state.shape[-1] == self.state_dim
+    #     next_s_dist = self.likelihood_network(torch.concat([state, action], -1))
+    #     log_prob_sprime = next_s_dist.log_prob(next_state).sum(-1, keepdim=True)
+    #     return log_prob_sprime
+    def contrastive_likelihood_step(self, batch_1, batch_2):
+        state, action, next_state, reward, _, task, next_task = unpack_batch(batch_1)
+        s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
+        assert state.shape[-1] == self.state_dim == s_random.shape[-1] == next_state.shape[-1] == s_prime_random.shape[-1]
+        assert action.shape[-1] == self.action_dim == a_random.shape[-1]
+        positive_log_prob_sprime = self.log_likelihood_part(state, action, next_state)
+        pos_loss = torch.nn.BCEWithLogitsLoss()(positive_log_prob_sprime, torch.ones_like(positive_log_prob_sprime))
+        random_log_prob_sprime = self.log_likelihood_part(state, a_random, next_state)
+        neg_loss_1 = torch.nn.BCEWithLogitsLoss()(random_log_prob_sprime, torch.zeros_like(random_log_prob_sprime))
+        random_log_prob_sprime = self.log_likelihood_part(state, action, s_prime_random)
+        neg_loss_2 = torch.nn.BCEWithLogitsLoss()(random_log_prob_sprime, torch.zeros_like(random_log_prob_sprime))
+        loss = pos_loss + neg_loss_1 + neg_loss_2
+        # loss = F.binary_cross_entropy_with_logits(log_prob_sprime, torch.ones_like(log_prob_sprime))
+        self.likelihood_optimizer.zero_grad()
+        loss.backward()
+        self.likelihood_optimizer.step()
+        return {
+            'loss': loss.item()
+        }
+    def log_likelihood_part(self, state, action, next_state):
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        assert next_state.shape[-1] == self.state_dim
+        return self.likelihood_network(torch.concat([state, action, next_state], -1))
+    def feature_step(self, batch_1, batch_2):
+        state, action, next_state, reward, _, task, next_task = unpack_batch(batch_1)
+        s_random, a_random, _, _, _, task_random, next_task_random = unpack_batch(batch_2)
+        s_prime_random = self.p_sprime.sample((s_random.shape[0],)).to(self.device)
+        assert state.shape[-1] == self.state_dim == s_random.shape[-1] == next_state.shape[-1] == s_prime_random.shape[-1]
+        assert action.shape[-1] == self.action_dim == a_random.shape[-1]
+        positive_log_prob_sprime = self.log_likelihood_part(state, action, next_state)
+        model_loss_1 = - 2 * positive_log_prob_sprime.mean()
+
+        random_log_prob_sprime = self.log_likelihood_part(s_random, a_random, s_prime_random)
+        model_loss_2 = ((random_log_prob_sprime)**2).mean()
+        loss = model_loss_1 + model_loss_2
+        self.likelihood_optimizer.zero_grad()
+        loss.backward()
+        self.likelihood_optimizer.step()
+        return {
+            'model_loss_1': model_loss_1.item(),
+            'model_loss_2': model_loss_2.item(),
+            'loss': loss.item()
+        }
+    def log_likelihood_all(self, state, action, next_state):
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        assert next_state.shape[-1] == self.state_dim
+        logf = torch.log(self.likelihood_network(torch.concat([state, action, next_state], -1)))
+        logPrior = self.p_sprime.log_prob(next_state).sum(-1, keepdim=True)
+        return logf + logPrior
+    def state_dict(self):
+        return {'likelihood_network': self.likelihood_network.state_dict()}
+    def load_state_dict(self, state_dict):
+        self.likelihood_network.load_state_dict(state_dict['likelihood_network'])
+
+    def train(self, buffer, batch_size):
+        """
+        One train step
+        """
+        self.steps += 1
+        batch_1 = buffer.sample(batch_size)
+        batch_2 = buffer.sample(batch_size)
+        feature_info = self.contrastive_likelihood_step(batch_1, batch_2)
+        return {
+            **feature_info
+        }
+
+class RandomFeatureModel():
+
+    def __init__(
+            self,
+            state_dim,
+            action_dim,
+            discount=0.99,
+            device='cuda:0',
+            n_task=3, **kwargs):
+        self.steps = 0
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.discount = discount
+        self.device = device
+        self.n_task = n_task
+        # self.normalize_dict = torch.load(f'./kms/normalize_dict_allnormalized_augment.pth')
+        # self.action_mean = torch.FloatTensor(self.normalize_dict['action_mean']).to(device)
+        # self.action_std = torch.FloatTensor(self.normalize_dict['action_std']).to(device)
+        # self.state_mean = torch.FloatTensor(self.normalize_dict['state_mean']).to(device)
+        # self.state_std = torch.FloatTensor(self.normalize_dict['state_std']).to(device)
+        # self.state_min = torch.FloatTensor(self.normalize_dict['state_min']).to(device)
+        # self.state_max = torch.FloatTensor(self.normalize_dict['state_max']).to(device)
+        # self.action_min = torch.FloatTensor(self.normalize_dict['action_min']).to(device)
+        # self.action_max = torch.FloatTensor(self.normalize_dict['action_max']).to(device)
+        self.sample_times = 8
+        self.p_omega = pyd.Normal(loc=0, scale=1)
+        self.p_b = pyd.Uniform(low=0, high=2*np.pi)
+        # self.omega_list = torch.load('./kms/omega_list.pt').to(self.device)
+        # self.b_list = torch.load('./kms/b_list.pt').to(self.device)
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        self.omega_list = torch.randn(state_dim, self.sample_times*state_dim).to(self.device)
+        self.b_list = torch.randn(1, self.sample_times*state_dim).to(self.device)
+        print('Omega:', self.omega_list.mean(), self.omega_list.std())
+        print('b:', self.b_list.mean(), self.b_list.std())
+        self.phi = RFFMLP_notrain(input_dim=state_dim, output_dim=state_dim*self.sample_times).to(device)
+        # print('Phi:', self.phi.l1.weight)
+        # print('Omega:', self.omega_list)    
+        self.mu = copy.deepcopy(self.phi)
+    def state_likelihood(self, state, action, next_state):
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        assert next_state.shape[-1] == self.state_dim
+        batch_size = state.shape[0]
+        # original_state = state * self.state_std + self.state_mean
+        # original_action = action * self.action_std + self.action_mean
+        # original_next_state = next_state
+        # psi_sa = ((original_state + original_action)-self.state_mean) / self.state_std
+        psi_sa = state + action
+        print(psi_sa)
+        # nu_sprime = (original_next_state)
+        nu_sprime = next_state
+        print(nu_sprime)
+        # print(((psi_sa-nu_sprime)**2).mean())
+        # print(psi_sa, nu_sprime)
+        z_phi = self.phi(psi_sa)
+        z_mu = self.mu(nu_sprime)
+        # z_phi = torch.cos(psi_sa @ self.phi.l1.weight.T + self.phi.l1.bias)
+        # z_mu = torch.cos(nu_sprime @ self.mu.l1.weight.T + self.mu.l1.bias)
+        # print(z_phi.shape)
+        # z_phi = torch.cos(psi_sa @ self.omega_list + self.b_list)
+        # z_mu = torch.cos(nu_sprime @ self.omega_list + self.b_list)
+        assert z_phi.shape == z_mu.shape == (batch_size, self.state_dim*self.sample_times)
+        prob = torch.sum(z_phi * z_mu, dim=-1, keepdim=True)
+        # prob = torch.sum(z_phi**2, dim=-1, keepdim=True) 
+        assert prob.shape == (batch_size, 1)
+        return prob

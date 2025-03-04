@@ -93,7 +93,21 @@ class ReplayBuffer(object):
 			task=torch.FloatTensor(self.task[ind]).to(self.device),
 			next_task=torch.FloatTensor(self.next_task[ind]).to(self.device)
 		)
-
+	def take(self, index):
+		if isinstance(index, int):
+			index = np.array([index])
+		if np.max(index) >= self.size:
+			raise ValueError('Index out of range')
+		return Batch(
+			state=torch.FloatTensor(self.state[index]).to(self.device),
+			action=torch.FloatTensor(self.action[index]).to(self.device),
+			next_state=torch.FloatTensor(self.next_state[index]).to(self.device),
+			reward=torch.FloatTensor(self.reward[index]).to(self.device),
+			done=torch.FloatTensor(self.done[index]).to(self.device),
+			task=torch.FloatTensor(self.task[index]).to(self.device),
+			next_task=torch.FloatTensor(self.next_task[index]).to(self.device)
+		)
+	
 	def state_dict(self):
 		return {
 			'state': self.state[:self.size],

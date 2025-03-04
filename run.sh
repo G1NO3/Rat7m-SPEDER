@@ -1,10 +1,10 @@
-python main.py --alg spedersac --env kms --feature_dim 64 \
-                --max_timesteps 1000000 --dir QR_keymoseq_filter_dataset_allznorm_bc_alltask\
-                --eval_freq 1000 --discount 0.9 --batch_size 256 --lasso_coef 0.01 --feature_lr 0.0001
-
-# python visualize.py --alg spedersac --env kms --feature_dim 64 \
-#                 --max_timesteps 700000 --dir QR_keymoseq_filter_dataset_allznorm_bc_alltask --start_timesteps 20000\
-#                 --eval_freq 5000 --discount 0.9 --batch_size 128 --times 100 --device cpu
+# python main.py --alg spedersac --env kms --feature_dim 1 \
+#                 --max_timesteps 1000000 --dir SPEDER_pure_feature_ctrl_f1_nonoise_mildnormalized_divideby200\
+#                 --eval_freq 1000 --discount 0.9 --batch_size 512 --lasso_coef 0.01 --feature_lr 0.0001
+# Caution
+python visualize.py --alg spedersac --env kms --feature_dim 512 \
+                --max_timesteps 1000000 --dir SPEDER_pure_feature_ctrl_f512_nonoise_mildnormalized_divideby200 --start_timesteps 200\
+                --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200
 # for i in 64 96 128
 # do  
     # echo "Running with feature dim: $i"

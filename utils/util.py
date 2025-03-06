@@ -71,7 +71,7 @@ class MLP(nn.Module):
 								input_dim,
 								hidden_dim,
 								output_dim,
-								hidden_depth,
+								hidden_depth=1,
 								output_mod=None):
 		super().__init__()
 		self.trunk = mlp(input_dim, hidden_dim, output_dim, hidden_depth,

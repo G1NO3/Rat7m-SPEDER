@@ -167,85 +167,6 @@ def check_action_space(args, dataset, agent):
   print(save_path)
   plt.close()
 
-
-def action_loglikelihood(args, dataset, agent):
-  batch_size = args.batch_size
-  times = 100
-  positive_logll = np.zeros(times)
-  positive_q = np.zeros(times)
-  negative_logll = np.zeros(times)
-  negative_q = np.zeros(times)
-  for i in range(times):
-    batch_1 = dataset.sample(batch_size)
-    batch_2 = dataset.sample(batch_size)
-    # action_2 = batch_2.action
-    action_2 = torch.randn_like(batch_1.action)
-    print(batch_1.action[0], action_2[0]) 
-    positive_logll_one, positive_q_one = agent.action_loglikelihood(batch_1.state, batch_1.action, batch_1.task)
-    positive_logll[i] = positive_logll_one.detach().cpu().numpy().mean()
-    positive_q[i] = positive_q_one.detach().cpu().numpy().mean()
-    negative_logll_one, negative_q_one = agent.action_loglikelihood(batch_1.state, action_2, batch_1.task)
-    negative_logll[i] = negative_logll_one.detach().cpu().numpy().mean()
-    negative_q[i] = negative_q_one.detach().cpu().numpy().mean()
-    print('pos:', positive_logll[i], positive_q[i])
-    print('neg:', negative_logll[i], negative_q[i])
-  
-  print('pos:', np.mean(positive_logll), np.std(positive_logll), np.mean(positive_q), np.std(positive_q))
-  print('neg:', np.mean(negative_logll), np.std(negative_logll), np.mean(negative_q), np.std(negative_q))
-  t, p = ttest_ind(positive_logll, negative_logll)
-  print('t:', t, 'p:', p)
-  fig, ax = plt.subplots(1,2, figsize=(10,10))
-  ax[0].hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
-  ax[0].hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
-  ax[0].legend(['positive sample', 'negative sample'])
-  ax[0].set_title('action log likelihood, p={:.4f}'.format(p))
-  t,p = ttest_ind(positive_q, negative_q)
-  print('t:', t, 'p:', p)
-  ax[1].hist(positive_q, bins=20, alpha=0.6, density=True, color='orange')
-  ax[1].hist(negative_q, bins=20, alpha=0.6, density=True, color='g')
-  ax[1].legend(['positive sample', 'negative sample'])
-  ax[1].set_title('action q value, p={:.4f}'.format(p))
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
-  if not os.path.exists(os.path.dirname(save_path)):
-    os.makedirs(os.path.dirname(save_path))
-  plt.savefig(save_path)
-  print(save_path)
-  plt.close()
-
-def action_profile(args, dataset, agent):
-  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.sample(1))
-  fig, axes = plt.subplots(4,8, figsize=(40,20))
-  axes = axes.flatten()
-  # fig, axes = plt.subplots(1, 1, figsize=(20,5))
-  bins = 31
-  all_logll = torch.zeros(agent.action_dim, bins)
-  show_idx = 0
-  for i in range(agent.action_dim):
-    action_i_scan = torch.linspace(action[show_idx,i]-1, action[show_idx,i]+1, bins)
-    logll = torch.zeros((bins,))
-    q = torch.zeros((bins,))
-    for j in range(bins):
-      new_action = action.clone()
-      new_action[show_idx, i] = action_i_scan[j]
-      print('action:', action[show_idx])
-      print('new_action:', new_action[show_idx])
-      logll_one, q_one = agent.action_loglikelihood(state, new_action, task)
-      logll[j] = logll_one[show_idx].detach()
-      q[j] = q_one[show_idx].detach()
-    axes[i].plot(action_i_scan, logll)
-    axes[i].vlines(action[show_idx, i], logll.min(), logll.max(), color='r', linestyle='--')
-    axes[i+action_dim].plot(action_i_scan, q)
-    axes[i+action_dim].vlines(action[show_idx, i], q.min(), q.max(), color='b', linestyle='--')
-  plt.tight_layout()
-  fig_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_profile_ll.png'
-  if not os.path.exists(os.path.dirname(fig_path)):
-    os.makedirs(os.path.dirname(fig_path))
-  plt.savefig(fig_path)
-  print(fig_path)
-  return
-    
-
-
 def visualize_wu(args, dataset, agent):
   plt.rcParams.update({'font.size': 15})
   n_task = agent.n_task
@@ -803,7 +724,6 @@ def test_logll(args, dataset, agent, times=100):
   batch_size = 256
   positive_ll = np.zeros(times)
   negative_ll = np.zeros(times)
-  # feature_dim = agent.feature_dim
   few_hots_mu = np.zeros((times, batch_size))
   few_hots_phi = np.zeros((times, batch_size))
   for i in range(0, times):
@@ -926,21 +846,170 @@ def test_logll(args, dataset, agent, times=100):
   plt.close()
   return positive_ll.mean(), positive_ll.std(), negative_ll.mean(), negative_ll.std()
 
+def action_test_logll(args, dataset, agent):
+  scale_factor = args.scale_factor
+  batch_size = args.batch_size
+  times = 100
+  positive_logll = np.zeros(times)
+  positive_q = np.zeros(times)
+  negative_logll = np.zeros(times)
+  negative_q = np.zeros(times)
+  lr = torch.load('./kms/linear_model.pth')
+  for i in range(times):
+    batch_1 = dataset.sample(batch_size)
+    batch_2 = dataset.sample(batch_size)
+    action_1 = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
+    action_2 = batch_2.action
+    # action_2 = torch.randn_like(batch_1.action)
+    print('original action:', batch_1.action[0], 'new action:', action_2[0]) 
+    positive_logll_one, positive_q_one = agent.action_loglikelihood(batch_1.state, action_1, batch_1.task)
+    positive_logll[i] = positive_logll_one.detach().cpu().numpy().mean()
+    positive_q[i] = positive_q_one.detach().cpu().numpy().mean()
+    negative_logll_one, negative_q_one = agent.action_loglikelihood(batch_1.state, action_2, batch_1.task)
+    negative_logll[i] = negative_logll_one.detach().cpu().numpy().mean()
+    negative_q[i] = negative_q_one.detach().cpu().numpy().mean()
+    print('pos:', positive_logll[i], positive_q[i])
+    print('neg:', negative_logll[i], negative_q[i])
+  
+  print('pos:', np.mean(positive_logll), np.std(positive_logll), np.mean(positive_q), np.std(positive_q))
+  print('neg:', np.mean(negative_logll), np.std(negative_logll), np.mean(negative_q), np.std(negative_q))
+  t, p = ttest_ind(positive_logll, negative_logll)
+  print('t:', t, 'p:', p)
+  fig, ax = plt.subplots(1,2, figsize=(10,5))
+  ax[0].hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
+  ax[0].hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
+  ax[0].legend(['positive sample', 'negative sample'])
+  ax[0].set_title(f'action log likelihood, p={p}')
+  t,p = ttest_ind(positive_q, negative_q)
+  print('t:', t, 'p:', p)
+  ax[1].hist(positive_q, bins=20, alpha=0.6, density=True, color='orange')
+  ax[1].hist(negative_q, bins=20, alpha=0.6, density=True, color='g')
+  ax[1].legend(['positive sample', 'negative sample'])
+  ax[1].set_title('action q value, p={:.4f}'.format(p))
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  plt.close()
+
+
+
+
+def action_profile_likelihood(args, dataset, agent):
+  scale_factor = args.scale_factor
+  torch.set_printoptions(threshold=torch.inf)
+  sample_idx = 6
+  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  fig, axes = plt.subplots(4,4, figsize=(10,10))
+  axes = axes.flatten()
+  bins = 31
+  all_logll = torch.zeros(agent.action_dim, bins)
+  show_idx = 0
+  total_range = 20/scale_factor
+  center = (bins-1)//2
+  lr = torch.load('./kms/linear_model.pth')
+  action_pred = lr.predict(state.detach().cpu().numpy())
+  for i in range(agent.action_dim):
+    action_i_scan = torch.linspace(action[show_idx,i]-total_range/2, action[show_idx,i]+total_range/2, bins)
+    logll = torch.zeros((bins,))
+    for j in range(bins):
+      new_action = action.clone()
+      new_action[show_idx,i] = action_i_scan[j]
+      # new_next_state[show_idx, i+1] = state_i_1_scan[j]
+      # print('next_state:', next_state[show_idx])
+      # print('new_next_state:', new_next_state[show_idx])/
+      # f.write(f'{new_next_state[show_idx]}\n')
+      # f.write(f'{state[0]}\n')
+      # f.write(f'{action[0]}\n')
+      logll[j] = agent.action_loglikelihood(state, new_action, task)[0].detach().cpu()
+      # f.write(f'{logll[j]}\n')
+      # print(logll[j])
+    all_logll[i] = logll
+    axes[i].plot(action_i_scan, logll)
+    # print(torch.exp(logll))
+    # print(logll)
+    # expect_next_state = state + action
+    axes[i].vlines(action[show_idx, i], logll.min(), logll.max(), color='r', linestyle='--', label='real a')
+    axes[i].vlines(action_pred[show_idx, i], logll.min(), logll.max(), color='k', linestyle='--', label='pred a')
+    axes[i].legend()
+    peak_i = torch.argmax(logll)
+    higher_than_80quantile = torch.where(logll[center] - torch.quantile(logll, 0.8, dim=-1)>0, True, False)
+    axes[i].set_title(f'peak {peak_i} higher than 80 {higher_than_80quantile}')
+    # all_logll[i] = logll
+    # print(next_state[show_idx])
+  # f.close()
+  peak_idx = torch.argmax(all_logll, dim=1)
+  peak_score = torch.where(peak_idx==center, 1., 0.).mean()
+  higher_than_mean = torch.where(all_logll[:, (bins-1)//2] - all_logll.mean(1)>0, 1., 0.).mean()
+  quantile = torch.quantile(all_logll, 0.8, dim=-1)
+  higher_than_80quantile = torch.where(all_logll[:, center] - quantile>0, 1., 0.).mean()
+  plt.suptitle(f'sample {sample_idx}, peak score: {peak_score}, higher than mean: {higher_than_mean}, higher than 80 quantile: {higher_than_80quantile}')
+  plt.tight_layout()
+  fig_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/profile_ll_action.png'
+  if not os.path.exists(os.path.dirname(fig_path)):
+    os.makedirs(os.path.dirname(fig_path))
+  plt.savefig(fig_path)
+  print(fig_path)
+  return
+
+def action_profile_likelihood_batch(args, dataset, agent):
+  torch.set_printoptions(threshold=torch.inf)
+  scale_factor = args.scale_factor
+  batch_size = 256
+  times = 10
+  bins = 31
+  metric_matrix = np.zeros((times, 3))
+  action_dim = agent.action_dim
+  for i in range(times):
+    # sample_idxs = np.random.randint(0, dataset.size, batch_size)
+    # print('sample_idxs:', sample_idxs)
+    state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.sample(batch_size))
+    # print('state:', state, 'action:', action, 'next_state:', next_state)
+    assert torch.isclose(state + action, next_state, atol=1e-6).all()
+    assert next_state.shape == (batch_size, agent.state_dim)
+    center = (bins-1)//2
+    total_range = 20/scale_factor
+    incremental_matrix = torch.eye(agent.action_dim).reshape(agent.action_dim, 1, agent.action_dim).repeat(1, bins, 1) \
+                      * ((torch.arange(bins) - center) * total_range/(bins-1)).reshape(1, bins, 1)
+    assert incremental_matrix.shape == (agent.action_dim, bins, agent.action_dim)
+    new_action = action.reshape(batch_size, 1, 1, agent.action_dim) + incremental_matrix.reshape(1, agent.action_dim, bins, agent.action_dim)
+    state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
+    task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
+    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[0].detach().cpu()
+    print('logll:', logll.shape)
+    assert logll.shape == (batch_size, agent.action_dim, bins)
+    peak_idx = torch.argmax(logll, dim=-1)
+    peak_score = torch.where(peak_idx==center, 1., 0.)
+    peak_score = peak_score.mean()
+    higher_than_mean = torch.where(logll[..., center] - logll.mean(-1)>0, 1., 0.).mean()
+    quantile = torch.quantile(logll, 0.80, dim=-1)
+    higher_than_80quantile = torch.where(logll[..., center] - quantile>0, 1., 0.).mean()
+    print(f'peak score: {peak_score}, higher than mean: {higher_than_mean}, higher than 80 quantile: {higher_than_80quantile}')
+    metric_matrix[i] = peak_score, higher_than_mean, higher_than_80quantile
+  print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
+  metric_mean = metric_matrix.mean(0)
+  metric_std = metric_matrix.std(0)
+  text_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_metric.txt'
+  if not os.path.exists(os.path.dirname(text_path)):
+    os.makedirs(os.path.dirname(text_path))
+  with open(text_path, 'w') as f:
+    f.write(f'total range: {total_range}, bins: {bins}, batch size: {batch_size}, times: {times}\n')
+    f.write(f'peak score: {metric_mean[0]:.4f} +- {metric_std[0]:.4f}\n')
+    f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
+    f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
+  print(text_path)
+  return
+
+
+
 def profile_likelihood(args, dataset, agent):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  state_min = dataset.state.min(0)
-  state_max = dataset.state.max(0)
-  #[68268 43567 42613 45891 21243 95939 41993 86293 55026 80471 80966 48600 39512 52620 80186 17089]
   sample_idx = 6
-  # print('sample_idx:', sample_idx)
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
-  # print('state:', state)
-  # print('action:', action)
-  # print('next_state:', next_state)  
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
-  # fig, axes = plt.subplots(1, 1, figsize=(20,5))
   bins = 31
   all_logll = torch.zeros(agent.state_dim, bins)
   show_idx = 0
@@ -1129,14 +1198,16 @@ if __name__ == "__main__":
   # agent = spedersac_agent.SimpleWorldModel(**kwargs)
   # agent = spedersac_agent.RandomFeatureModel(**kwargs)
   
-  agent.load_phi_mu(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
-  # agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
+  # agent.load_phi_mu(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
+  agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # compare_bn_statistics(args, replay_buffer, agent)
-  # optimize_next_state(args, replay_buffer, agent)
-  profile_likelihood(args, replay_buffer, agent)
-  profile_likelihood_batch(args, replay_buffer, agent)
+  # profile_likelihood(args, replay_buffer, agent)
+  # profile_likelihood_batch(args, replay_buffer, agent)
+  # action_profile_likelihood(args, replay_buffer, agent)
+  # action_profile_likelihood_batch(args, replay_buffer, agent)
+  action_test_logll(args, replay_buffer, agent)
   # args.times = 100
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)

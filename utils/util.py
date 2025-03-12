@@ -151,6 +151,15 @@ class Norm1MLP(nn.Module):
 		x = x / torch.linalg.norm(x, ord=2, dim=-1, keepdim=True)
 		return x
 
+class Norm1MLP_singlelayer(nn.Module):
+	def __init__(self, input_dim, output_dim):
+		super().__init__()
+		self.l1 = nn.Linear(input_dim, output_dim)
+	def forward(self, x):
+		x = F.elu(self.l1(x))
+		x = x / torch.linalg.norm(x, ord=2, dim=-1, keepdim=True)
+		return x
+
 class RFFMLP(nn.Module):
 	def __init__(self, input_dim, hidden_dim, output_dim):
 		super().__init__()

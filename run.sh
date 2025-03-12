@@ -1,9 +1,9 @@
 python main.py --alg spedersac --env kms --feature_dim 128 \
-                --max_timesteps 1000000 --dir C_f128_simultaneously\
-                --eval_freq 1000 --discount 0.9 --batch_size 512 --lasso_coef 0.01 --feature_lr 0.0001
+                --max_timesteps 1000000 --dir S_f128_singlelayeru\
+                --eval_freq 1000 --discount 0.9 --batch_size 512 --lasso_coef 0.1 --feature_lr 0.0001
 # Caution
 # python visualize.py --alg spedersac --env kms --feature_dim 128 \
-#                 --max_timesteps 1000000 --dir C_f128_multiplication_onlyrandoma_fixf --start_timesteps 200\
+#                 --max_timesteps 1000000 --dir C_f128_simultaneously_singlephis_Wl1_lasso1e-1_group --start_timesteps 200\
 #                 --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200
 # for i in 64 96 128
 # do  

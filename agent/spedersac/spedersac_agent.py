@@ -8,7 +8,8 @@ import os
 
 # from utils.util import unpack_batch, RunningMeanStd
 from utils.util import unpack_batch
-from utils.util import MLP, DoubleMLP, RFFCritic, Theta, RFFMLP, RFF_complex_critic, RFFMLP_notrain, Norm1MLP
+from utils.util import MLP, DoubleMLP, RFFCritic, Theta, \
+    RFFMLP, RFF_complex_critic, RFFMLP_notrain, Norm1MLP, Norm1MLP_singlelayer
 
 from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor
@@ -101,9 +102,8 @@ class SPEDERSACAgent():
         self.obs_dict = pyd.uniform.Uniform(low=self.state_min, high=self.state_max)
         # for key, value in self.normalize_dict.items():
         #     self.normalize_dict[key] = torch.FloatTensor(value).to(self.device)
-        self.phi = Norm1MLP(input_dim=state_dim + action_dim,
-                       output_dim=feature_dim,
-                       hidden_dim=phi_hidden_dim).to(device)
+        self.phi = Norm1MLP_singlelayer(input_dim=state_dim + action_dim,
+                       output_dim=feature_dim).to(device)
         # self.phi = RFFMLP(input_dim=state_dim + action_dim,
         #                   hidden_dim=state_dim,
         #                   output_dim=feature_dim).to(device)
@@ -247,7 +247,13 @@ class SPEDERSACAgent():
         # model_loss = model_loss_pt1_summed + model_loss_pt2_summed
 
 
-        # W = self.phi.trunk[0].weight
+        W = self.phi.l1.weight
+        group_by_coordinate_W = W.reshape(self.feature_dim, (self.state_dim + self.action_dim)//2, 2)
+        group_lasso = torch.sqrt(group_by_coordinate_W.pow(2).mean(-1)).mean()
+        W_l1 = group_lasso * self.lasso_coef
+        # same_sign_loss = torch.square(group_by_coordinate_W.diff(dim=-1)).mean() * 0.01
+        # W_l1 = torch.abs(W).mean() * self.lasso_coef
+        
         # assert W.shape == (self.phi_hidden_dim, self.state_dim + self.action_dim)
         # group_by_coordinate_W = W.reshape(self.phi_hidden_dim, (self.state_dim + self.action_dim)//2, 2)
         # group_lasso = torch.sqrt(group_by_coordinate_W.pow(2).sum(-1).sum(0)).sum()
@@ -262,7 +268,7 @@ class SPEDERSACAgent():
         # negative_ll_2 = (z_phi @ z_mu_next_random.T).mean()
         # negative_ll_2 = torch.sum(z_phi * z_mu_next_random, dim=-1)
         # negative_loss_2 = torch.nn.BCEWithLogitsLoss()(negative_ll_2, torch.zeros_like(negative_ll_2))
-        loss = loss_ctrl
+        loss = loss_ctrl + W_l1
         # print('model_loss', model_loss)
         self.feature_optimizer.zero_grad()
         loss.backward()
@@ -277,7 +283,8 @@ class SPEDERSACAgent():
             # 'negative_ll_1': negative_loss_1.item(),
             # 'negative_ll_2': negative_loss_2.item(),
             'loss_ctrl': loss_ctrl.item(),
-            # 'loss': loss.item(),
+            'loss_feature': loss.item(),
+            'W_l1': W_l1.item(),
         }
 
     def update_feature_target(self):
@@ -515,6 +522,8 @@ class SPEDERSACAgent():
         self.mu.load_state_dict(state_dict['mu'])
         self.w.load_state_dict(state_dict['w'])
         print('load state dict keys: actor, critic, u, log_alpha, phi, mu, w')
+        # torch.set_printoptions(threshold=torch.inf)
+        # print(list(self.phi.parameters()))
         # self.theta.load_state_dict(state_dict['theta'])
 
     def load_phi_mu(self, state_dict):

@@ -95,7 +95,7 @@ def rollout(args, dataset, agent, syllable, timestep=5):
   
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]
-  edges, state_name = get_edges(stateseq.shape[1])
+  edges, state_name, n_dim = get_edges(stateseq.shape[1])
   fig, axis = plt.subplots(1, 1, figsize=(5, 6))
   n_bodyparts = len(state_name)
   n_img = stateseq.shape[0]
@@ -242,84 +242,101 @@ def get_edges(state_dim):
                 ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
                 ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
                 ('KneeR', 'ShinR')]
+    n_dim = 3
   elif state_dim == 16:
     state_name = ['spine4', 'spine3', 'spine2', 'spine1', 'head', 'nose', 'right ear', 'left ear']
     skeleton = [('spine4', 'spine3'), ('spine3', 'spine2'),
                 ('spine2', 'spine1'), ('spine1', 'head'), ('head', 'nose'),
                 ('head', 'left ear'), ('head', 'right ear')]
+    n_dim = 2
   else:
     raise ValueError(f'state_dim {state_dim} not supported')
   edges = []
   for i in skeleton:
     edges.append((state_name.index(i[0]), state_name.index(i[1])))
-  return edges, state_name
+  return edges, state_name, n_dim
 
 def PCA_IG_skeleton(args, dataset, agent):
   # ig_matrix: [feature_dim, state_dim+action_dim]
   ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, \
     state_name, action_name = cal_IG_matrix(args, dataset, agent, 3)
+  print('ig_matrix_agg_xyz:', ig_matrix_agg_xyz)
   print('IG done')
   n_bodyparts = len(state_name)
-  pca = PCA(n_components=20)
+  n_components = 10
+  pca = PCA(n_components=n_components)
   assert ig_matrix_agg_xyz.shape == (agent.feature_dim, n_bodyparts*2)
   print(ig_matrix_agg_xyz.shape)  
   ig_pca = pca.fit_transform(ig_matrix_agg_xyz.T)
   # ig_pca = pca.components_
   print(ig_pca.shape)
-  assert ig_pca.shape == (n_bodyparts*2, 20)
-  fig, ax = plt.subplots(1,1, figsize=(10, 10))
-  ax.plot(pca.explained_variance_ratio_.cumsum())
-  ax.set_title('PCA explained variance ratio')
+  assert ig_pca.shape == (n_bodyparts*2, n_components)
+  fig, ax = plt.subplots(1,1, figsize=(3, 3))
+  ax.plot(pca.explained_variance_ratio_.cumsum(), marker='o', markersize=5)
+  ax.set_title('PCA evr')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pca_evr.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
   print(save_path)
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_pca.png'
-  plot_IG_skeleton(ig_pca.T, state_name, 20, save_path)
+  plot_IG_skeleton(ig_pca.T, state_name, n_components, save_path)
 
 def draw_IG_skeleton(args, dataset, agent):
-  ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, \
-    state_name, action_name = cal_IG_matrix(args, dataset, agent, 3)
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_skeleton.png'
-  plot_IG_skeleton(ig_matrix_agg_xyz, state_name, agent.feature_dim, save_path)
+  edges, state_name, n_dim = get_edges(agent.state_dim)
+  ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz = cal_IG_matrix(args, dataset, agent, 3)
+  ig_matrix_xy = ig_matrix.reshape(agent.feature_dim, -1, n_dim)
+  ig_matrix_x = ig_matrix_xy[:,:,0]
+  ig_matrix_y = ig_matrix_xy[:,:,1]
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_skeleton_x.png'
+  plot_IG_skeleton(ig_matrix_x, state_name, agent.feature_dim, save_path)
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/ig_skeleton_y.png'
+  plot_IG_skeleton(ig_matrix_y, state_name, agent.feature_dim, save_path)
+  print('correlation:', np.corrcoef(ig_matrix_x.flatten(), ig_matrix_y.flatten()))
+
 
 def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
   # ig_matrix: [feature_dim, state_dim+action_dim]
-  edges, state_name = get_edges(ig_matrix_agg_xyz.shape[1]//2)
+  edges, state_name, n_dim = get_edges(ig_matrix_agg_xyz.shape[1])
   col = 10*2
   row = feature_dim//(col//2) + 1
   fig, axes = plt.subplots(row, col, figsize=(col*5, row*6))
   axes = axes.flatten()
-  ymean = np.load('./ymean.npy')
+  ymean = np.load('./kms/s_mean.npy')
+  print(ymean.shape)
   dims, name = [0,2], 'xz'
+  if ymean.shape[1] == 54:
+    ymean_to_plot = ymean.reshape(-1, 3)[:, :, dims]
+  else:
+    ymean_to_plot = ymean.reshape(-1, 2)
   cmap = plt.cm.get_cmap('viridis')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   n_bodyparts = len(state_name)
-  assert ymean.shape == (n_bodyparts, 3)
+  assert ymean_to_plot.shape == (n_bodyparts, n_dim)
   assert ig_matrix_agg_xyz.shape == (feature_dim, 2*n_bodyparts)
   for i in range(feature_dim):
     for e in edges:
+      # print(e, ymean_to_plot[e,:])
       axes[i*2].plot(
-          *ymean[:, dims][e,:].T,
+          *ymean_to_plot[e,:].T,
           color=keypoint_colors[e[0]],
           linewidth=5.0,
           zorder=0)
       axes[i*2+1].plot(
-          *ymean[:, dims][e,:].T,
+          *ymean_to_plot[e,:].T,
           color=keypoint_colors[e[0]],
           linewidth=5.0,
           zorder=0)
     node_colors = ['blue' if ig_matrix_agg_xyz[i, j] < 0 else 'red' for j in range(2*n_bodyparts)]
     axes[i*2].scatter(
-          *ymean[:, dims].T,
+          *ymean_to_plot.T,
           c=node_colors[:n_bodyparts],
-          s=np.abs(ig_matrix_agg_xyz[i, :n_bodyparts])*120,
+          s=np.abs(ig_matrix_agg_xyz[i, :n_bodyparts])*300,
           zorder=1)
     axes[i*2+1].scatter(
-          *ymean[:, dims].T,
+          *ymean_to_plot.T,
           c=node_colors[n_bodyparts:],
-          s=np.abs(ig_matrix_agg_xyz[i, n_bodyparts:])*120,
+          s=np.abs(ig_matrix_agg_xyz[i, n_bodyparts:])*300,
           zorder=1)
 
     axes[i*2].set_title(f'F{i} state', fontsize=30)
@@ -336,10 +353,7 @@ def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
   return
 
 def cal_IG_matrix(args, dataset, agent, times=3):
-  state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
-                'SpineL','HipL','HipR','ElbowL','ArmL',
-                'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
-                'KneeL','ShinL','ShinR']
+  edges, state_name, n_dim = get_edges(agent.state_dim)
   action_name = state_name
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if os.path.exists(f'{save_path}/ig_matrix.npy'):
@@ -347,7 +361,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
     ig_std_matrix = np.load(f'{save_path}/ig_std_matrix.npy')
     ig_matrix_agg_xyz = np.load(f'{save_path}/ig_matrix_agg.npy')
     ig_std_matrix_agg_xyz = np.load(f'{save_path}/ig_std_matrix_agg.npy')
-    return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, state_name, action_name
+    return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz
 
   model = agent.phi
   ig = IntegratedGradients(model)
@@ -368,7 +382,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
   for i in range(0, times):
     batch = dataset.sample(args.batch_size)
     state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
-    sa_ar = torch.cat([state, action], dim=1).to('cuda:0')
+    sa_ar = torch.cat([state, action], dim=1)
     sa_ar.requires_grad = True
     for j in range(agent.feature_dim):
       attr_ig, delta = ig.attribute(sa_ar, target=j, return_convergence_delta=True, 
@@ -389,20 +403,20 @@ def cal_IG_matrix(args, dataset, agent, times=3):
   # sns.heatmap(ig_matrix, cmap='coolwarm', ax=ax)
   if not os.path.exists(save_path):
     os.makedirs(save_path)
-  print(agent.state_dim, len(np.arange(0,agent.state_dim,3)))
+  print(agent.state_dim, len(np.arange(0,agent.state_dim,n_dim)))
   ig_matrix = ig_matrix_all.mean(dim=0)
   ig_std_matrix = ig_std_matrix_all.mean(dim=0)
   np.save(f'{save_path}/ig_matrix.npy', ig_matrix)
   np.save(f'{save_path}/ig_std_matrix.npy', ig_std_matrix)
-  ig_matrix_agg_xyz = ig_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
-  ig_std_matrix_agg_xyz = ig_std_matrix.reshape(agent.feature_dim, -1, 3).mean(dim=-1)
+  ig_matrix_agg_xyz = ig_matrix.reshape(agent.feature_dim, -1, n_dim).mean(dim=-1)
+  ig_std_matrix_agg_xyz = ig_std_matrix.reshape(agent.feature_dim, -1, n_dim).mean(dim=-1)
   ig_matrix = ig_matrix.detach().cpu().numpy()
   ig_std_matrix = ig_std_matrix.detach().cpu().numpy()
   ig_matrix_agg_xyz = ig_matrix_agg_xyz.detach().cpu().numpy()
   ig_std_matrix_agg_xyz = ig_std_matrix_agg_xyz.detach().cpu().numpy()
   np.save(f'{save_path}/ig_matrix_agg.npy', ig_matrix_agg_xyz)
   np.save(f'{save_path}/ig_std_matrix_agg.npy', ig_std_matrix_agg_xyz)
-  return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz, state_name, action_name
+  return ig_matrix, ig_std_matrix, ig_matrix_agg_xyz, ig_std_matrix_agg_xyz
 
 def IntegratedGradients_attr(args, dataset, agent):
   fig, ax = plt.subplots(1,2, figsize=(20, 10))
@@ -858,7 +872,8 @@ def action_test_logll(args, dataset, agent):
   for i in range(times):
     batch_1 = dataset.sample(batch_size)
     batch_2 = dataset.sample(batch_size)
-    action_1 = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
+    # action_1 = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
+    action_1 = batch_1.action
     action_2 = batch_2.action
     # action_2 = torch.randn_like(batch_1.action)
     print('original action:', batch_1.action[0], 'new action:', action_2[0]) 
@@ -960,6 +975,8 @@ def action_profile_likelihood_batch(args, dataset, agent):
   times = 10
   bins = 31
   metric_matrix = np.zeros((times, 3))
+  linear_model_metric_matrix = np.zeros((times, 2))
+  linear_model = torch.load('./kms/linear_model.pth')
   action_dim = agent.action_dim
   for i in range(times):
     # sample_idxs = np.random.randint(0, dataset.size, batch_size)
@@ -987,9 +1004,24 @@ def action_profile_likelihood_batch(args, dataset, agent):
     higher_than_80quantile = torch.where(logll[..., center] - quantile>0, 1., 0.).mean()
     print(f'peak score: {peak_score}, higher than mean: {higher_than_mean}, higher than 80 quantile: {higher_than_80quantile}')
     metric_matrix[i] = peak_score, higher_than_mean, higher_than_80quantile
-  print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
+    # linear model
+    action_pred = linear_model.predict(state.detach().cpu().numpy())
+    action_pred = torch.FloatTensor(action_pred)
+    assert action_pred.shape == action.shape
+    linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[0].detach().cpu()
+    # print('linear model logll:', linear_model_logll.shape, 'logll:', logll.shape, 'quantile:', quantile.shape)
+    assert linear_model_logll.shape == (batch_size, )
+    print('linear model logll:', linear_model_logll)
+    print('logll mean:', logll.mean(-1).mean(-1))
+    print('quantile:', quantile.mean(-1))
+    higher_than_mean_linear = torch.where(linear_model_logll - logll.mean(-1).mean(-1)>0, 1., 0.).mean()
+    higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
+    linear_model_metric_matrix[i] = higher_than_mean_linear, higher_than_80quantile_linear
+  # print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
   metric_mean = metric_matrix.mean(0)
   metric_std = metric_matrix.std(0)
+  linear_metric_mean = linear_model_metric_matrix.mean(0) 
+  linear_metric_std = linear_model_metric_matrix.std(0)
   text_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_metric.txt'
   if not os.path.exists(os.path.dirname(text_path)):
     os.makedirs(os.path.dirname(text_path))
@@ -998,6 +1030,8 @@ def action_profile_likelihood_batch(args, dataset, agent):
     f.write(f'peak score: {metric_mean[0]:.4f} +- {metric_std[0]:.4f}\n')
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
     f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
+    f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
+    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
   print(text_path)
   return
 
@@ -1051,6 +1085,8 @@ def profile_likelihood(args, dataset, agent):
   higher_than_mean = torch.where(all_logll[:, (bins-1)//2] - all_logll.mean(1)>0, 1., 0.).mean()
   stay_likelihood = agent.state_likelihood(state, action, state)[0]
   higher_than_stay = torch.where(all_logll[:, (bins-1)//2] - stay_likelihood>=-1e-6, 1., 0.).mean()
+  print(all_logll[:, (bins-1)//2],stay_likelihood)
+  print(all_logll[:, (bins-1)//2] - stay_likelihood)
   # print('stay_likelihood:', stay_likelihood, 'sprime likelihood:',all_logll[:, (bins-1)//2])
   # print('higher_than_stay:', all_logll[:, (bins-1)//2] - stay_likelihood)
   # print('peak score:', peak_score, 'higher than mean:', higher_than_mean, 'higher than stay:', higher_than_stay)
@@ -1133,7 +1169,140 @@ def profile_likelihood_batch(args, dataset, agent):
   print(text_path)
   return
 
+def show_phi_weight(args, dataset, agent):
+  phi_weight = agent.phi.l1.weight.detach().cpu().numpy()
+  save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
+  if not os.path.exists(save_dir_path):
+    os.makedirs(save_dir_path)
+  n_input = phi_weight.shape[1]
+  n_s = n_input//2
+  hidden_dim = phi_weight.shape[0]
+  def PCA_weight(weight, n_components, save_dir_path, feature_dim, n_s):
+    print('weight:', weight)
+    assert weight.shape == (feature_dim, n_s*2)
+    pca = PCA(n_components=n_components)
+    pca.fit(weight.T)
+    transformed_weight = pca.transform(weight.T)
+    fig, ax = plt.subplots(1,1, figsize=(5,5))
+    ax.plot(pca.explained_variance_ratio_.cumsum(), marker='o', markersize=5)
+    ax.set_title('explained variance ratio')
+    plt.savefig(f'{save_dir_path}/phi_weight_evr.png')
+    plt.close()
+    print(f'{save_dir_path}/phi_weight_evr.png')
+    fig, ax = plt.subplots(1,1, figsize=(5,5))
+    ax.imshow(transformed_weight, interpolation='nearest')
+    plt.savefig(f'{save_dir_path}/phi_weight_pca.png')
+    plt.close()
+    print(f'{save_dir_path}/phi_weight_pca.png')
+    edges, state_name, n_dim = get_edges(n_s)
+    transformed_weight_xy = transformed_weight.T.reshape(n_components, n_s, 2)
+    # print('transformed_weight:', transformed_weight_xy)
+    plot_IG_skeleton(transformed_weight_xy[...,0]*50, state_name, n_components, f'{save_dir_path}/phi_weight_skeleton_x.png')
+    plot_IG_skeleton(transformed_weight_xy[...,1]*50, state_name, n_components, f'{save_dir_path}/phi_weight_skeleton_y.png')
+    return pca
+  def plot_weight_skeleton(weight, save_dir_path, feature_dim, n_s):
+    edges, state_name, n_dim = get_edges(n_s)
+    assert weight.shape == (feature_dim, n_s*2)
+    weight_xy = weight.reshape(feature_dim, n_s, 2)
+    plot_IG_skeleton(weight_xy[...,0]*50, state_name, feature_dim, f'{save_dir_path}/phi_weight_skeleton_x.png')
+    plot_IG_skeleton(weight_xy[...,1]*50, state_name, feature_dim, f'{save_dir_path}/phi_weight_skeleton_y.png')
+    return
+  def plot_weight_matrix(weight, save_dir_path, feature_dim, n_s):
+    assert weight.shape == (feature_dim, n_s*2)
+    state_action_corr = np.sum(phi_weight[:,:n_s]*phi_weight[:,n_s:], axis=1)/np.sqrt(np.sum(phi_weight[:,:n_s]**2, axis=1)*np.sum(phi_weight[:,n_s:]**2, axis=1))
+    corr = np.correlate(phi_weight[:,:n_s].flatten(), phi_weight[:,n_s:].flatten())
+    print('corr:', corr)
+    corr_value = state_action_corr.mean()
+    fig, ax = plt.subplots(1,1, figsize=(10,5))
+    img = ax.imshow(weight.T, cmap='hot', interpolation='nearest')
+    fig.colorbar(img, ax=ax)
+    plt.subplots_adjust(left=0.05, right=0.95)
+    plt.suptitle(f'state action correlation:{corr_value}')
+    save_path = f'{save_dir_path}/phi_weight_matrix.png'
+    plt.savefig(save_path)
+    print(save_path)
+    plt.close()
+    return
+  plot_weight_matrix(phi_weight, save_dir_path, hidden_dim, n_s)
+  # few_hots = np.where(np.abs(phi_weight) > np.mean(np.abs(phi_weight), axis=1, keepdims=True), 1, 0).mean(1)
+  # fig, ax = plt.subplots(1,1,figsize=(5,5))
+  # ax.hist(few_hots, bins=20, density=True, alpha=0.6, color='orange')
+  # U, S, Vh = np.linalg.svd(phi_weight, full_matrices=False)
+  # print('Ushape:', U.shape, 'Sshape:', S.shape, 'Vshape:', Vh.shape)
+  # print('singular value:', S)
+  # assert np.allclose(phi_weight, U[...,:S.shape[0]]@np.diag(S)@Vh, atol=1e-6)
 
+  # PCA_weight(phi_weight, 20, save_dir_path, hidden_dim, n_s)
+  # plot_weight_skeleton(phi_weight, save_dir_path, hidden_dim, n_s)
+
+  # fig, axes = plt.subplots(1,2, figsize=(10,5))
+  # for i in range(hidden_dim):
+    # if i % 17 == 0:
+      # axes[0].plot(phi_weight[i,:n_s], label=i)
+      # axes[1].plot(phi_weight[i, n_s:], label=i)
+  # state_action_corr = np.sum(phi_weight[:,:n_s]*phi_weight[:,n_s:], axis=1)/np.linalg.norm(phi_weight[:,:n_s],axis=1)*np.linalg.norm(phi_weight[:,n_s:], axis=1)
+  # state_action_corr = np.corrcoef(phi_weight[:,:n_s], phi_weight[:,n_s:], rowvar=True)
+  # plt.suptitle(f'correlation between state and action, mean:{state_action_corr.mean()}')
+  # print('state action correlation:', state_action_corr)
+  # axes[0].legend()
+  # axes[0].set_title('state')
+  # axes[1].legend()
+  # axes[1].set_title('action')
+
+  # fig, axes = plt.subplots(1,3, figsize=(15,5))
+
+  # ax.spines['top'].set_visible(True)
+  # ax.set_xticks(np.arange(hidden_dim), np.arange(hidden_dim), fontsize=30, color='k')
+  # ax.xaxis.set_ticks_position('top')
+  
+  # ax.plot(S, c='r', markersize=10, linewidth=2, marker='o')
+  # fig, axes = plt.subplots(2,2, figsize=(10,10))
+  # axes = axes.flatten()
+  # for i in range(4):
+  #   for j in range(n_input//2):
+  #     if j % 7 == 0:
+  #       axes[i].plot(Vh[i//2*n_s+j, i%2*n_s:(i%2+1)*n_s])
+  # corr_ar = np.sum(Vh[:,:n_s]*Vh[:,n_s:], axis=1)/np.linalg.norm(Vh[:,:n_s],axis=1)*np.linalg.norm(Vh[:,n_s:], axis=1)
+  # print('pos correlation:', corr_ar[:n_s])
+  # print('neg correlation:', corr_ar[n_s:])
+    
+  # ax.imshow(Vh)
+  # n_input = phi_weight.shape[1]
+  # ax.spines['top'].set_visible(True)
+  # ax.set_xticks(np.arange(n_input//2), np.arange(n_input//2), fontsize=30, color='k')
+  # ax.xaxis.set_ticks_position('top')
+  # ax.set_xticks(np.arange(n_input//2, n_input), np.arange(n_input//2), fontsize=30, color='red')
+  # ax.set_yticks(np.arange(n_input), np.arange(n_input), fontsize=30)
+  # print('U:', U)
+  # print('V:', V)
+  # ax.imshow(phi_weight.T,)
+  # axes[0].imshow(phi_weight, cmap='hot', interpolation='nearest')
+  # axes[1].hist(phi_weight.flatten(), bins=20, density=True, color='orange')
+  # for i in range(phi_weight.shape[0]):
+  #   axes[2].plot(phi_weight[i], label=i)
+  # plt.legend()
+  # plt.suptitle('phi weight')
+
+  # plt.savefig(save_path)
+  # print(save_path)
+  # plt.close()
+  return
+  
+def show_u(args, dataset, agent):
+  task_all = torch.eye(agent.n_task)
+  u_all = agent.u(task_all)
+  u = u_all.detach().cpu().numpy()
+  save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
+  if not os.path.exists(save_dir_path):
+    os.makedirs(save_dir_path)
+  fig, axes = plt.subplots(1,1, figsize=(15,5))
+  axes.imshow(u, cmap='hot', interpolation='nearest')
+  # axes[1].hist(u.flatten(), bins=20, density=True, color='orange')
+  save_path = f'{save_dir_path}/u.png'
+  plt.savefig(save_path)
+  print(save_path)
+  plt.close()
+  return
 
 EPS_GREEDY = 0.01
 
@@ -1202,15 +1371,17 @@ if __name__ == "__main__":
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
-  # compare_bn_statistics(args, replay_buffer, agent)
+
+  show_u(args, replay_buffer, agent)
+  # show_phi_weight(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
-  action_test_logll(args, replay_buffer, agent)
-  # args.times = 100
+  # action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+
   # optimize_input(args, agent)
   # cluster_in_phi_space(args, replay_buffer, agent)
   # args.times = 3

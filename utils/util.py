@@ -140,6 +140,16 @@ def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
 #         ])
 #         super().__init__(self.normal_dist, self.trunc_transform)
 
+class SigmoidMLP(nn.Module):
+	def __init__(self, input_dim, hidden_dim, output_dim):
+		super().__init__()
+		self.l1 = nn.Linear(input_dim, hidden_dim)
+		self.l2 = nn.Linear(hidden_dim, output_dim)
+	def forward(self, x):
+		x = F.elu(self.l1(x))
+		x = nn.Sigmoid()(self.l2(x))
+		return x
+
 class Norm1MLP(nn.Module):
 	def __init__(self, input_dim, hidden_dim, output_dim):
 		super().__init__()

@@ -96,3 +96,23 @@ class DiagGaussianActor(nn.Module):
       dist = self.forward(obs)
       action = dist.rsample()
       return action
+  
+class MultiSoftmaxActor(nn.Module):
+  def __init__(self, obs_dim, action_dim, n_action, hidden_dim, hidden_depth):
+    super().__init__()
+    self.action_dim = action_dim
+    self.n_action = n_action
+    self.trunk = util.mlp(obs_dim, hidden_dim, action_dim,
+                            hidden_depth)
+    self.apply(util.weight_init)
+
+  def forward(self, obs):
+    logits = self.trunk(obs).reshape(-1, self.action_dim//self.n_action, self.n_action)
+    dist = pyd.Categorical(logits=logits)
+    return dist
+
+  def select_action(self, obs):
+    with torch.no_grad():
+      dist = self.forward(obs)
+      action = dist.sample()
+      return action

@@ -159,19 +159,18 @@ if __name__ == "__main__":
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
   if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
     # pretrained_dir_name = args.dir.replace('_fixf', '').replace('_finetunef', '')
-    pretrained_dir_name = 'SPEDER_pure_feature_ctrl_f128_nonoise_mildnormalized_divideby200'
+    pretrained_dir_name = 'S_f128_lasso_001_dataset200_discrete'
     pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
     agent.load_phi_mu(torch.load(pretrained_model_path))
     print(f'Phi Mu loaded from {pretrained_model_path}')
     # actor_dir_name = pretrained_dir_name + '_actor'
     # actor_model_path = f'./model/{args.env}/{args.alg}/{actor_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
-    # agent.load_actor(torch.load(actor_model_path))
-    # print(f'Actor loaded from {actor_model_path}')
+    agent.load_actor(torch.load(pretrained_model_path))
+    print(f'Actor loaded from {pretrained_model_path}')
     # if args.dir.endswith('fixf'):
     #   print('Fix Phi and Mu')
     # else:
     #   print('Finetune Phi')
-
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]
   # state, done = env.reset(), False

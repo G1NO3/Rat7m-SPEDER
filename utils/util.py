@@ -89,8 +89,8 @@ class DoubleMLP(nn.Module):
                  hidden_depth,
                  ):
         super().__init__()
-        self.trunk1 = mlp_nobatchnorm(input_dim, hidden_dim, output_dim, hidden_depth)
-        self.trunk2 = mlp_nobatchnorm(input_dim, hidden_dim, output_dim, hidden_depth)
+        self.trunk1 = mlp(input_dim, hidden_dim, output_dim, hidden_depth)
+        self.trunk2 = mlp(input_dim, hidden_dim, output_dim, hidden_depth)
 
     def forward(self, x):
         return self.trunk1(x), self.trunk2(x)

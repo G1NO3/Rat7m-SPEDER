@@ -671,7 +671,7 @@ def test_logll_smoothly(args, dataset, agent):
   show_idx = 0
   change_dim = 0
   # linspaces = torch.stack([torch.linspace(next_state[show_idx,i]-1, next_state[show_idx,i]+1, bins) for i in range(agent.state_dim)], 0).transpose(1,0)
-  expected_next_state = state + action
+  # expected_next_state = state + action
   state_i_scan = torch.linspace(expected_next_state[show_idx,change_dim]-30/scale_factor, expected_next_state[show_idx,change_dim]+30/scale_factor, bins)
   logll = torch.zeros((bins,))
   phi = torch.zeros((bins, agent.feature_dim))
@@ -1060,7 +1060,7 @@ def action_profile_likelihood_discrete(args, dataset, agent):
       # f.write(f'{new_next_state[show_idx]}\n')
       # f.write(f'{state[0]}\n')
       # f.write(f'{action[0]}\n')
-      logll[j] = agent.action_loglikelihood(state, new_action, task)[0].detach().cpu()
+      logll[j] = agent.action_loglikelihood(state, new_action, task)[1].detach().cpu()
 
       # f.write(f'{logll[j]}\n')
       # print(logll[j])
@@ -1161,7 +1161,7 @@ def profile_likelihood(args, dataset, agent):
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
-  bins = 31
+  bins = 21
   all_logll = torch.zeros(agent.state_dim, bins)
   show_idx = 0
   # linspaces = torch.stack([torch.linspace(next_state[show_idx,i]-1, next_state[show_idx,i]+1, bins) for i in range(agent.state_dim)], 0).transpose(1,0)
@@ -1222,7 +1222,7 @@ def profile_likelihood_batch(args, dataset, agent):
   scale_factor = args.scale_factor
   batch_size = 256
   times = 10
-  bins = 31
+  bins = 21
   metric_matrix = np.zeros((times, 4))
   state_dim = agent.state_dim
   action_dim = agent.action_dim
@@ -1408,9 +1408,11 @@ def show_phi_weight(args, dataset, agent):
 def show_u(args, dataset, agent):
   print('n_task:', agent.n_task)
   task_all = torch.eye(agent.n_task)
+  # u1, u2 = agent.critic(task_all)
   u_all = agent.u(task_all)
+  # u = u1.detach().cpu().numpy()
   u = u_all.detach().cpu().numpy()
-  print(u)
+  # print(u)
   save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_dir_path):
     os.makedirs(save_dir_path)
@@ -1554,8 +1556,8 @@ if __name__ == "__main__":
   profile_likelihood(args, replay_buffer, agent)
   profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
-  action_profile_likelihood_discrete(args, replay_buffer, agent)
-  action_profile_likelihood_batch(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete(args, replay_buffer, agent)
+  # action_profile_likelihood_batch(args, replay_buffer, agent)
   action_test_logll(args, replay_buffer, agent)
   test_logll_smoothly(args, replay_buffer, agent)
   posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)

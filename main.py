@@ -157,6 +157,8 @@ if __name__ == "__main__":
     agent = spedersac_agent.ValueDICEAgent(**kwargs)
   
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
+  # agent.load_state_dict(torch.load(f'./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth'))
+  # print(f'Agent loaded from ./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth')
   if args.dir.endswith('_fixf') or args.dir.endswith('_finetunef'):
     # pretrained_dir_name = args.dir.replace('_fixf', '').replace('_finetunef', '')
     pretrained_dir_name = 'S_f128_lasso_001_dataset200_discrete'

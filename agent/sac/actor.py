@@ -107,7 +107,7 @@ class MultiSoftmaxActor(nn.Module):
     self.apply(util.weight_init)
 
   def forward(self, obs):
-    logits = self.trunk(obs).reshape(-1, self.action_dim//self.n_action, self.n_action)
+    logits = self.trunk(obs).reshape(*obs.shape[:-1], self.action_dim//self.n_action, self.n_action)
     dist = pyd.Categorical(logits=logits)
     return dist
 

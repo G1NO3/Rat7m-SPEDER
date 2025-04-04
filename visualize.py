@@ -903,7 +903,7 @@ def action_test_logll(args, dataset, agent):
   ax[1].hist(positive_q, bins=20, alpha=0.6, density=True, color='orange')
   ax[1].hist(negative_q, bins=20, alpha=0.6, density=True, color='g')
   ax[1].legend(['positive sample', 'negative sample'])
-  ax[1].set_title('action q value, p={:.4f}'.format(p))
+  ax[1].set_title(f'action q value, p={p}')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
@@ -1041,14 +1041,16 @@ def action_profile_likelihood_batch(args, dataset, agent):
 def action_profile_likelihood_discrete(args, dataset, agent):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = 6
+  sample_idx = 587
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
   all_logll = torch.zeros(agent.action_dim//agent.n_action, agent.n_action)
   show_idx = 0
-  # lr = torch.load('./kms/linear_model.pth')
-  # action_pred = lr.predict(state.detach().cpu().numpy())
+  lr = torch.load('./kms/linear_model_discrete.pth')
+  action_pred = lr.predict(state.detach().cpu().numpy())
+  action_pred = torch.FloatTensor(action_pred)
+  action_pred = torch.clip(action_pred, 0, agent.n_action-1).long()
   for i in range(agent.action_dim//agent.n_action):
     logll = torch.zeros((agent.n_action,))
     for j in range(agent.n_action):
@@ -1060,14 +1062,14 @@ def action_profile_likelihood_discrete(args, dataset, agent):
       # f.write(f'{new_next_state[show_idx]}\n')
       # f.write(f'{state[0]}\n')
       # f.write(f'{action[0]}\n')
-      logll[j] = agent.action_loglikelihood(state, new_action, task)[1].detach().cpu()
+      logll[j] = agent.action_loglikelihood(state, new_action, task)[0].detach().cpu()
 
       # f.write(f'{logll[j]}\n')
       # print(logll[j])
     all_logll[i] = logll
     axes[i].bar(torch.arange(agent.n_action), logll)
     axes[i].vlines(action[show_idx, i], logll.min(), logll.max(), color='r', linestyle='--', label='real a')
-    # axes[i].vlines(action_pred[show_idx, i], logll.min(), logll.max(), color='k', linestyle='--', label='pred a')
+    axes[i].vlines(action_pred[show_idx, i], logll.min(), logll.max(), color='k', linestyle='--', label='pred a')
     axes[i].legend()
     peak_i = torch.argmax(logll)
     # higher_than_80quantile = torch.where(logll[center] - torch.quantile(logll, 0.8, dim=-1)>0, True, False)
@@ -1091,13 +1093,11 @@ def action_profile_likelihood_discrete(args, dataset, agent):
 
 def action_profile_likelihood_discrete_batch(args, dataset, agent):
   torch.set_printoptions(threshold=torch.inf)
-  scale_factor = args.scale_factor
   batch_size = 256
   times = 10
-  bins = 31
-  metric_matrix = np.zeros((times, 3))
-  linear_model_metric_matrix = np.zeros((times, 2))
-  linear_model = torch.load('./kms/linear_model.pth')
+  metric_matrix = np.zeros((times, 2))
+  linear_model_metric_matrix = np.zeros((times, 1))
+  linear_model = torch.load('./kms/linear_model_discrete.pth')
   action_dim = agent.action_dim
   n_action_dim = agent.action_dim//agent.n_action
   n_action = agent.n_action
@@ -1105,37 +1105,41 @@ def action_profile_likelihood_discrete_batch(args, dataset, agent):
   for i in range(times):
     state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.sample(batch_size))
     assert next_state.shape == (batch_size, agent.state_dim)
-    incremental_matrix = torch.eye(agent.action_dim//agent.n_action).reshape(agent.action_dim//agent.n_action, 1, agent.action_dim//agent.n_action).repeat(1, agent.n_action, 1)
-    assert incremental_matrix.shape == (n_action_dim, n_action, n_action_dim)
-    new_action = action.reshape(batch_size, 1, 1, n_action_dim) + incremental_matrix.reshape(1, n_action_dim, n_action, n_action_dim)
-    new_action = torch.arange(n_action).reshape(1, 1, n_action).repeat(batch_size, n_action_dim, 1)
+    # incremental_matrix = torch.eye(agent.action_dim//agent.n_action).reshape(agent.action_dim//agent.n_action, 1, agent.action_dim//agent.n_action).repeat(1, agent.n_action, 1)
+    # assert incremental_matrix.shape == (n_action_dim, n_action, n_action_dim)
+    new_action = action.reshape(batch_size, 1, 1, n_action_dim).repeat(1, n_action_dim, n_action, 1)
+    for j in range(n_action_dim):
+      new_action[:,j,:,j] = torch.arange(n_action)
+    # new_action_onehot = torch.eye(n_action)[new_action].reshape(batch_size, n_action_dim, n_action, n_action*n_action_dim)
     state_batch = state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, n_action_dim, n_action, 1)
     #TODO TODO following
     task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, n_action_dim, n_action, 1)
-    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[0].detach().cpu()
+    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[1].detach().cpu()
     print('logll:', logll.shape)
-    assert logll.shape == (batch_size, agent.action_dim, bins)
+    assert logll.shape == (batch_size, n_action_dim, n_action)
     peak_idx = torch.argmax(logll, dim=-1)
-    peak_score = torch.where(peak_idx==center, 1., 0.)
+    peak_score = torch.where(peak_idx==action, 1., 0.)
     peak_score = peak_score.mean()
-    higher_than_mean = torch.where(logll[..., center] - logll.mean(-1)>0, 1., 0.).mean()
-    quantile = torch.quantile(logll, 0.80, dim=-1)
-    higher_than_80quantile = torch.where(logll[..., center] - quantile>0, 1., 0.).mean()
-    print(f'peak score: {peak_score}, higher than mean: {higher_than_mean}, higher than 80 quantile: {higher_than_80quantile}')
-    metric_matrix[i] = peak_score, higher_than_mean, higher_than_80quantile
+    logll_action = torch.gather(logll,2,action.long().unsqueeze(-1)).squeeze(-1)
+    higher_than_mean = torch.where(logll_action - logll.mean(-1)>0, 1., 0.).mean()
+    # quantile = torch.quantile(logll, 0.80, dim=-1)
+    # higher_than_80quantile = torch.where(logll[..., center] - quantile>0, 1., 0.).mean()
+    print(f'peak score: {peak_score}, higher than mean: {higher_than_mean}')
+    metric_matrix[i] = peak_score, higher_than_mean
     # linear model
     action_pred = linear_model.predict(state.detach().cpu().numpy())
     action_pred = torch.FloatTensor(action_pred)
+    action_pred = torch.clip(action_pred, 0, n_action-1).long()
     assert action_pred.shape == action.shape
     linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[0].detach().cpu()
     # print('linear model logll:', linear_model_logll.shape, 'logll:', logll.shape, 'quantile:', quantile.shape)
     assert linear_model_logll.shape == (batch_size, )
     print('linear model logll:', linear_model_logll)
     print('logll mean:', logll.mean(-1).mean(-1))
-    print('quantile:', quantile.mean(-1))
+    # print('quantile:', quantile.mean(-1))
     higher_than_mean_linear = torch.where(linear_model_logll - logll.mean(-1).mean(-1)>0, 1., 0.).mean()
-    higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
-    linear_model_metric_matrix[i] = higher_than_mean_linear, higher_than_80quantile_linear
+    # higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
+    linear_model_metric_matrix[i] = higher_than_mean_linear
   # print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
   metric_mean = metric_matrix.mean(0)
   metric_std = metric_matrix.std(0)
@@ -1145,12 +1149,12 @@ def action_profile_likelihood_discrete_batch(args, dataset, agent):
   if not os.path.exists(os.path.dirname(text_path)):
     os.makedirs(os.path.dirname(text_path))
   with open(text_path, 'w') as f:
-    f.write(f'total range: {total_range}, bins: {bins}, batch size: {batch_size}, times: {times}\n')
+    f.write(f'batch size: {batch_size}, times: {times}\n')
     f.write(f'peak score: {metric_mean[0]:.4f} +- {metric_std[0]:.4f}\n')
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
-    f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
+    # f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
     f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
-    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
+    # f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
   print(text_path)
   return
 
@@ -1429,6 +1433,13 @@ def show_u(args, dataset, agent):
 
   return
 
+def show_last_weight(args, dataset, agent):
+  for name, param in agent.critic.named_parameters():
+    print(name, param.shape)
+  last_layer_weight = agent.critic.named_parameters()['trunk.2.weight'][0].detach().cpu().numpy()
+
+
+
 def density_trajectory(args, dataset, agent):
   scale_factor = args.scale_factor
   task = np.arange(0, agent.n_task)
@@ -1552,12 +1563,14 @@ if __name__ == "__main__":
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
   show_u(args, replay_buffer, agent)
-  show_phi_weight(args, replay_buffer, agent)
+  # show_phi_weight(args, replay_buffer, agent)
+  # show_last_weight(args, replay_buffer, agent)
   profile_likelihood(args, replay_buffer, agent)
   profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
-  # action_profile_likelihood_discrete(args, replay_buffer, agent)
+  action_profile_likelihood_discrete(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
+  action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   action_test_logll(args, replay_buffer, agent)
   test_logll_smoothly(args, replay_buffer, agent)
   posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)

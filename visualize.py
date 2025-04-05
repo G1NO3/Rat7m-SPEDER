@@ -871,6 +871,8 @@ def action_test_logll(args, dataset, agent):
   positive_q = np.zeros(times)
   negative_logll = np.zeros(times)
   negative_q = np.zeros(times)
+  lr_logll = np.zeros(times)
+  lr_q = np.zeros(times)
   lr = torch.load('./kms/linear_model.pth')
   for i in range(times):
     batch_1 = dataset.sample(batch_size)
@@ -878,6 +880,7 @@ def action_test_logll(args, dataset, agent):
     # action_1 = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
     action_1 = batch_1.action
     action_2 = batch_2.action
+    action_pred = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
     # action_2 = torch.randn_like(batch_1.action)
     print('original action:', batch_1.action[0], 'new action:', action_2[0]) 
     positive_logll_one, positive_q_one = agent.action_loglikelihood(batch_1.state, action_1, batch_1.task)
@@ -886,24 +889,36 @@ def action_test_logll(args, dataset, agent):
     negative_logll_one, negative_q_one = agent.action_loglikelihood(batch_1.state, action_2, batch_1.task)
     negative_logll[i] = negative_logll_one.detach().cpu().numpy().mean()
     negative_q[i] = negative_q_one.detach().cpu().numpy().mean()
+    lr_logll_one, lr_q_one = agent.action_loglikelihood(batch_1.state, action_pred, batch_1.task)
+    lr_logll[i] = lr_logll_one.detach().cpu().numpy().mean()
+    lr_q[i] = lr_q_one.detach().cpu().numpy().mean()
+
     print('pos:', positive_logll[i], positive_q[i])
     print('neg:', negative_logll[i], negative_q[i])
+    print('lr:', lr_logll[i], lr_q[i])
   
   print('pos:', np.mean(positive_logll), np.std(positive_logll), np.mean(positive_q), np.std(positive_q))
   print('neg:', np.mean(negative_logll), np.std(negative_logll), np.mean(negative_q), np.std(negative_q))
+  print('lr:', np.mean(lr_logll), np.std(lr_logll), np.mean(lr_q), np.std(lr_q))
   t, p = ttest_ind(positive_logll, negative_logll)
   print('t:', t, 'p:', p)
+  t2, p2 = ttest_ind(positive_logll, lr_logll)
+  print('t2:', t2, 'p2:', p2)
   fig, ax = plt.subplots(1,2, figsize=(10,5))
   ax[0].hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
   ax[0].hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
-  ax[0].legend(['positive sample', 'negative sample'])
-  ax[0].set_title(f'action log likelihood, p={p}')
+  ax[0].hist(lr_logll, bins=20, alpha=0.6, density=True, color='b')
+  ax[0].legend(['positive sample', 'negative sample', 'lr pred'])
+  ax[0].set_title(f'action log likelihood, p={p},\n p2={p2}')
   t,p = ttest_ind(positive_q, negative_q)
   print('t:', t, 'p:', p)
+  t2,p2 = ttest_ind(positive_q, lr_q)
+  print('t2:', t2, 'p2:', p2)
   ax[1].hist(positive_q, bins=20, alpha=0.6, density=True, color='orange')
   ax[1].hist(negative_q, bins=20, alpha=0.6, density=True, color='g')
-  ax[1].legend(['positive sample', 'negative sample'])
-  ax[1].set_title(f'action q value, p={p}')
+  ax[1].hist(lr_q, bins=20, alpha=0.6, density=True, color='b')
+  ax[1].legend(['positive sample', 'negative sample', 'lr pred'])
+  ax[1].set_title(f'action q value, p={p},\n p2={p2}')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
@@ -976,9 +991,9 @@ def action_profile_likelihood_batch(args, dataset, agent):
   scale_factor = args.scale_factor
   batch_size = 256
   times = 10
-  bins = 31
+  bins = 21
   metric_matrix = np.zeros((times, 3))
-  linear_model_metric_matrix = np.zeros((times, 2))
+  linear_model_metric_matrix = np.zeros((times, 3))
   linear_model = torch.load('./kms/linear_model.pth')
   action_dim = agent.action_dim
   for i in range(times):
@@ -1017,9 +1032,10 @@ def action_profile_likelihood_batch(args, dataset, agent):
     print('linear model logll:', linear_model_logll)
     print('logll mean:', logll.mean(-1).mean(-1))
     print('quantile:', quantile.mean(-1))
+    peak_score_linear = torch.where((action_pred - action)<0.005, 1., 0.).mean()
     higher_than_mean_linear = torch.where(linear_model_logll - logll.mean(-1).mean(-1)>0, 1., 0.).mean()
     higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
-    linear_model_metric_matrix[i] = higher_than_mean_linear, higher_than_80quantile_linear
+    linear_model_metric_matrix[i] = peak_score_linear, higher_than_mean_linear, higher_than_80quantile_linear
   # print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
   metric_mean = metric_matrix.mean(0)
   metric_std = metric_matrix.std(0)
@@ -1033,6 +1049,7 @@ def action_profile_likelihood_batch(args, dataset, agent):
     f.write(f'peak score: {metric_mean[0]:.4f} +- {metric_std[0]:.4f}\n')
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
     f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
+    f.write(f'linear model peak score: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
     f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
     f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
   print(text_path)
@@ -1244,7 +1261,7 @@ def profile_likelihood_batch(args, dataset, agent):
     assert incremental_matrix.shape == (agent.state_dim, bins, agent.state_dim)
     new_next_state = next_state.reshape(batch_size, 1, 1, agent.state_dim) + incremental_matrix.reshape(1, agent.state_dim, bins, agent.state_dim)
     state_batch = state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, agent.state_dim, bins, 1)
-    action_batch = action.reshape(batch_size, 1, 1, agent.action_dim//agent.n_action).repeat(1, agent.state_dim, bins, 1)
+    action_batch = action.reshape(batch_size, 1, 1, agent.action_dim).repeat(1, agent.state_dim, bins, 1)
     # with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/state.txt', 'w') as f:
     #   for k in range(agent.state_dim):
     #     for l in range(bins):
@@ -1254,7 +1271,7 @@ def profile_likelihood_batch(args, dataset, agent):
     #   for l in range(bins):
     #     print('new_next_state:', new_next_state[0,l])
     # print(state_batch.dtype, action_batch.dtype, new_next_state.dtype)
-    logll = agent.state_likelihood(state_batch.reshape(-1,state_dim), action_batch.reshape(-1,action_dim//agent.n_action), 
+    logll = agent.state_likelihood(state_batch.reshape(-1,state_dim), action_batch.reshape(-1,action_dim), 
                                    new_next_state.reshape(-1,state_dim))[0].reshape(batch_size, agent.state_dim, bins)
     assert logll.shape == (batch_size, agent.state_dim, bins)
     # with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/logll.txt', 'w') as f:
@@ -1563,17 +1580,17 @@ if __name__ == "__main__":
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
   show_u(args, replay_buffer, agent)
-  # show_phi_weight(args, replay_buffer, agent)
+  show_phi_weight(args, replay_buffer, agent)
   # show_last_weight(args, replay_buffer, agent)
-  profile_likelihood(args, replay_buffer, agent)
-  profile_likelihood_batch(args, replay_buffer, agent)
+  # profile_likelihood(args, replay_buffer, agent)
+  # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
-  action_profile_likelihood_discrete(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
-  action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   action_test_logll(args, replay_buffer, agent)
-  test_logll_smoothly(args, replay_buffer, agent)
-  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # test_logll_smoothly(args, replay_buffer, agent)
+  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)
   # density_trajectory(args, replay_buffer, agent)
   # optimize_next_state(args, replay_buffer, agent)

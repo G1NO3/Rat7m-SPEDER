@@ -1426,24 +1426,30 @@ def show_phi_weight(args, dataset, agent):
   # plt.close()
   return
   
-def show_u(args, dataset, agent):
+def show_uw(args, dataset, agent):
   print('n_task:', agent.n_task)
   task_all = torch.eye(agent.n_task)
   # u1, u2 = agent.critic(task_all)
   u_all = agent.u(task_all)
+  w_all = agent.w(task_all)
   # u = u1.detach().cpu().numpy()
   u = u_all.detach().cpu().numpy()
+  w = w_all.detach().cpu().numpy()
   # print(u)
   save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_dir_path):
     os.makedirs(save_dir_path)
-  fig, axes = plt.subplots(1,1, figsize=(15,5))
+  fig, axes = plt.subplots(2,1, figsize=(15,10))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
   for i in range(agent.n_task):
-    axes.plot(u[i], label=i)
-  axes.legend()
+    axes[0].plot(u[i], label=i)
+    axes[1].plot(w[i], label=i)
+  axes[0].set_title('u')
+  axes[1].set_title('w')
+  axes[0].legend()
+  axes[1].legend()
   # axes[1].hist(u.flatten(), bins=20, density=True, color='orange')
-  save_path = f'{save_dir_path}/u.png'
+  save_path = f'{save_dir_path}/uw.png'
   plt.savefig(save_path)
   print(save_path)
   plt.close()
@@ -1579,7 +1585,7 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  show_u(args, replay_buffer, agent)
+  show_uw(args, replay_buffer, agent)
   show_phi_weight(args, replay_buffer, agent)
   # show_last_weight(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)

@@ -180,7 +180,7 @@ class SPEDERSACAgent():
                                                 betas=[0.9, 0.999])  # lower lr for actor/alpha
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=critic_and_actor_lr, betas=[0.9, 0.999])
 
-        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters()),
+        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters())+list(self.phi.parameters()),
                                                     weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
         # self.u_optimizer = torch.optim.Adam(list(self.u.parameters())+list(self.w.parameters()),
         #                                          weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
@@ -319,7 +319,7 @@ class SPEDERSACAgent():
         ll_ctrl = z_phi @ z_mu_next.T
         loss_ctrl = torch.nn.CrossEntropyLoss()(ll_ctrl, torch.eye(state.shape[0]).to(self.device))
 
-        loss = loss_ctrl + W_l1 * self.lasso_coef
+        loss = loss_ctrl
         self.feature_optimizer.zero_grad()
         loss.backward()
         self.feature_optimizer.step()
@@ -493,7 +493,7 @@ class SPEDERSACAgent():
         q_actor_target = torch.gather(actor_dist.logits, dim=-1, index=expert_action.long().reshape(batch_size, -1, 1)).squeeze(-1).sum(-1, keepdim=True)
         assert q_actor_target.shape == (expert_state.shape[0], 1)
         expert_action_onehot = torch.eye(self.n_action)[expert_action.long()].reshape(-1, self.action_dim).to(self.device)
-        z_phi = self.phi(torch.concat([expert_state, expert_action_onehot], -1)).detach() # only need gradient in this place
+        z_phi = self.phi(torch.concat([expert_state, expert_action_onehot], -1)) # only need gradient in this place
         f_phi = self.critic(z_phi)
         z_u = self.u(expert_task_onehot)
         z_w = self.w(expert_task_onehot)
@@ -509,7 +509,9 @@ class SPEDERSACAgent():
         q_bellman_target = r_linear + (1 - expert_done) * self.discount * next_V
         assert next_V.shape == r_linear.shape == q_linear.shape == q_bellman_target.shape == (batch_size, 1)
         loss_q_bellman = torch.nn.MSELoss()(q_bellman_target, q_linear)
-        loss = loss_q + loss_q_bellman
+        u_l1 = torch.abs(z_u).mean()
+        w_l1 = torch.abs(z_w).mean()
+        loss = loss_q + loss_q_bellman + self.lasso_coef * (u_l1 + w_l1)/2 * 100
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()

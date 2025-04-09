@@ -180,7 +180,7 @@ class SPEDERSACAgent():
                                                 betas=[0.9, 0.999])  # lower lr for actor/alpha
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=critic_and_actor_lr, betas=[0.9, 0.999])
 
-        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters())+list(self.phi.parameters()),
+        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters()),
                                                     weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
         # self.u_optimizer = torch.optim.Adam(list(self.u.parameters())+list(self.w.parameters()),
         #                                          weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
@@ -219,9 +219,9 @@ class SPEDERSACAgent():
         return target_q
     def get_targetQ_u(self, state, action, task_onehot):
         z_phi = self.phi(torch.concat([state, action], -1))
-        # f_phi = self.critic_target(z_phi)
+        f_phi = self.critic_target(z_phi)
         target_u = self.u(task_onehot)
-        target_q = torch.sum(z_phi * target_u, dim=-1, keepdim=True)
+        target_q = torch.sum(f_phi * target_u, dim=-1, keepdim=True)
         return target_q
     def get_targetQ_QR(self, state, action, task_onehot):
         z_phi = self.phi(torch.concat([state, action], -1))
@@ -422,14 +422,14 @@ class SPEDERSACAgent():
         assert expert_next_state.shape[-1] == self.state_dim
         assert expert_done.shape[-1] == 1
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
-        expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().squeeze(-1)].to(self.device)
+        # expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
         batch_size = expert_state.shape[0]
-        actor_dist = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
-        q_actor_target = actor_dist.log_prob(expert_action).sum(-1, keepdim=True)
+        # actor_dist = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        # q_actor_target = actor_dist.log_prob(expert_action).sum(-1, keepdim=True)
         # q_actor_negative_target = actor_dist.log_prob(a_random).sum(-1, keepdim=True)   
-        assert q_actor_target.shape == (expert_state.shape[0], 1)
+        # assert q_actor_target.shape == (expert_state.shape[0], 1)
         # expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().reshape(-1)].to(self.device)
         # expert_task_onehot_random = torch.eye(self.n_task)[task_random.long().squeeze(-1)].to(self.device)
         # assert expert_task_onehot_random.shape == (expert_state.shape[0], self.n_task)
@@ -439,35 +439,44 @@ class SPEDERSACAgent():
         # batch_action_onehot = torch.eye(self.n_action)[batch_action.long()].reshape(batch_size, -1, self.n_action).to(self.device)
         # batch_state = expert_state.reshape(batch_size, 1, self.state_dim).repeat(1, self.action_dim, 1)
         # batch_state_action = torch.concat([batch_state, batch_action], dim=-1)
-        # batch_state = expert_state.reshape(1, batch_size, self.state_dim)
-        # batch_action = expert_action.reshape(batch_size, 1, self.action_dim)
+        batch_state = expert_state.reshape(1, batch_size, self.state_dim)
+        batch_action = expert_action.reshape(batch_size, 1, self.action_dim)
         # batch_action = actor_action.reshape(batch_size, 1, self.action_dim)
-        # batch_state_action = torch.concat([batch_state.expand(batch_size, -1, -1), batch_action.expand(-1, batch_size, -1)], dim=-1)
-        # batch_z_phi = self.phi(batch_state_action).detach()
+        batch_state_action = torch.concat([batch_state.expand(batch_size, -1, -1), batch_action.expand(-1, batch_size, -1)], dim=-1)
+        batch_z_phi = self.phi(batch_state_action).detach()
+        batch_f_phi = self.critic(batch_z_phi)
         # calculate r
         # expert_action_onehot = torch.eye(self.n_action)[expert_action.long()].reshape(-1, self.action_dim).to(self.device)
-        z_phi = self.phi(torch.concat([expert_state, expert_action], -1)) # only need gradient in this place
+        # z_phi = self.phi(torch.concat([expert_state, expert_action], -1)) # only need gradient in this place
         # z_phi_random_a = self.phi(torch.concat([expert_state, a_random], -1)).detach()
-        z_u = self.u(expert_task_onehot)
-        u_l1 = torch.abs(z_u).mean()
+        batch_task_onehot = expert_task_onehot.reshape(1, batch_size, self.n_task).expand(batch_size, -1, -1)
+        batch_u = self.u(batch_task_onehot)
+        
+        # z_u = self.u(expert_task_onehot)
+        # u_l1 = torch.abs(z_u).mean()
         # self.beta.data.clamp_(1,2000)
         # q_all = batch_z_phi @ z_u.T * self.beta
-        q_all = torch.sum(z_phi * z_u, dim=-1, keepdim=True)
-        assert q_all.shape == (batch_size, 1)
-        loss_q = torch.nn.MSELoss()(q_actor_target, q_all)
+        # q_all = torch.sum(z_phi * z_u, dim=-1, keepdim=True)
+        q_all = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
+        # assert q_all.shape == (batch_size, 1)
+        # loss_q = torch.nn.MSELoss()(q_actor_target, q_all)
         # loss_q_random = torch.nn.MSELoss()(q_actor_negative_target, q_all)
-        # assert q_all.shape == (batch_size, batch_size)
-        # label = torch.eye(batch_size).to(self.device)
-        # loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
-        z_w = self.w(expert_task_onehot)
-        rec_r = torch.sum(z_phi * z_w, dim=-1, keepdim=True)
-        next_V = self.get_targetV(expert_next_state, expert_next_task_onehot).detach()
-        q_bellman_target = rec_r + (1 - expert_done) * self.discount * next_V
-        assert next_V.shape == rec_r.shape == q_all.shape == q_bellman_target.shape == (batch_size, 1)
-        loss_q_bellman = torch.nn.MSELoss()(q_bellman_target, q_all)
-        ul1 = torch.abs(z_u).mean()
-        wl1 = torch.abs(z_w).mean()
-        loss = loss_q + loss_q_bellman + self.lasso_coef * (ul1 + wl1)/2
+        assert q_all.shape == (batch_size, batch_size)
+        label = torch.eye(batch_size).to(self.device)
+        loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
+
+        # z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach() # only need gradient in this place
+        # f_phi = self.critic(z_phi)
+        # z_w = self.w(expert_task_onehot)
+        # rec_r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
+        # next_V = self.get_targetV(expert_next_state, expert_next_task_onehot).detach()
+        # q_bellman_target = rec_r + (1 - expert_done) * self.discount * next_V
+        # assert next_V.shape == rec_r.shape == q_all.shape == q_bellman_target.shape == (batch_size, 1)
+        # loss_q_bellman = torch.nn.MSELoss()(q_bellman_target, q_all)
+        # ul1 = torch.abs(z_u).mean()
+        # wl1 = torch.abs(z_w).mean()
+        # loss = loss_q + loss_q_bellman + self.lasso_coef * (ul1 + wl1)/2
+        loss = loss_ctrl
         # print('q_loss', q_loss)
         self.critic_optimizer.zero_grad()
         # self.beta_optimizer.zero_grad()
@@ -478,10 +487,81 @@ class SPEDERSACAgent():
         # self.beta_optimizer.step()
 
         return {
-            'u_l1': u_l1.item(),
-            'loss_q': loss_q.item(),
-            'loss_q_bellman': loss_q_bellman.item(),
+            'loss_ctrl_a': loss_ctrl.item(),
+            # 'u_l1': u_l1.item(),
+            # 'loss_q': loss_q.item(),
+            # 'loss_q_bellman': loss_q_bellman.item(),
         }
+    def critic_step_CD(self, batch, s_random, a_random, s_prime_random, task_random):
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        # print('task_onehot', task_onehot.shape)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        action_prime = self.MALA_step(batch)
+        z_u = self.u(expert_task_onehot)
+        z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
+        f_phi = self.critic(z_phi)
+        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        z_phi_prime = self.phi(torch.concat([expert_state, action_prime], -1)).detach()
+        f_phi_prime = self.critic(z_phi_prime)
+        q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
+        loss = (q_data - q_E).mean()
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        self.critic_optimizer.step()
+        return {
+            'loss_CD': loss.item(),
+            'q_data': q_data.mean().item(),
+            'q_E': q_E.mean().item(),
+        }
+    def MALA_step(self, batch):
+        # A serious problem is that the action is bounded. So maybe we should turn to discrete.
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        # print('task_onehot', task_onehot.shape)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        def potential(action):
+            z_phi = self.phi(torch.concat([expert_state, action], -1))
+            f_phi = self.critic(z_phi)
+            z_u = self.u(expert_task_onehot)
+            q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+            return -q_data
+
+        def log_transition_prob(x, x_prime, step):
+            x.requires_grad = True
+            grad = torch.autograd.grad(potential(x).mean(), x)[0]
+            difference = x_prime - x + step * grad
+            log_prob = -torch.sum(difference ** 2, dim=-1, keepdim=True)/(4*step)
+            return log_prob
+        expert_action.requires_grad = True
+        E = potential(expert_action).mean()
+        grad = torch.autograd.grad(E, expert_action)[0]
+        # print('expert_action grad 1:', grad)
+        step = 1
+        action_prime = expert_action.detach() - step * grad + torch.randn_like(expert_action) * step/100
+        assert action_prime.shape == expert_action.shape
+        # print(action_prime.shape, expert_action.shape)
+        action_prime = torch.clamp(action_prime, -0.05, 0.05)
+        # E_prime = potential(action_prime).mean()
+        log_ratio = -potential(action_prime) + potential(expert_action) \
+            + log_transition_prob(action_prime, expert_action, step) - log_transition_prob(expert_action, action_prime, step)
+        assert log_ratio.shape == (expert_action.shape[0], 1)
+        accept = torch.rand(expert_action.shape[0],1).to(self.device) < torch.exp(log_ratio)
+        # print('ratio:',torch.exp(log_ratio))
+        assert action_prime.shape == expert_action.shape
+        action_prime = torch.where(accept, action_prime, expert_action).detach()
+        return action_prime
+        
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)
@@ -606,10 +686,10 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        critic_info = self.critic_step_continuous(batch_1, s_random, a_random, s_prime_random, task_random)
+        critic_info = self.critic_step_CD(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        actor_info = self.update_actor_and_alpha(batch_1)
+        # actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
         self.update_target()
@@ -617,7 +697,7 @@ class SPEDERSACAgent():
         return {
             **feature_info,
             **critic_info,
-            **actor_info,
+            # **actor_info,
         }
     
     def state_likelihood(self, state, action, next_state, kde=False):
@@ -653,13 +733,14 @@ class SPEDERSACAgent():
         # action_onehot = torch.eye(self.n_action)[action.long()]
         # action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], -1).to(self.device)    
         z_phi = self.phi(torch.concat([state, action], -1))
+        f_phi = self.critic(z_phi)
             # q = self.critic(torch.cat([z_phi, task_onehot], -1)).squeeze(-1)
         # q = torch.sum(z_phi * self.u(task_onehot)*self.beta, dim=-1, keepdim=False)
         # q = torch.sum(z_phi * self.u(task_onehot), dim=-1, keepdim=False)
         # f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
-        z_w = self.w(task_onehot)
-        q = torch.sum(z_phi * z_u, dim=-1, keepdim=False)
+        # z_w = self.w(task_onehot)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
 
 
             # u1, u2 = self.critic(task_onehot)

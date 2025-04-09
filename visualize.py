@@ -88,7 +88,7 @@ def rollout(args, dataset, agent, syllable, timestep=20):
   stateseq[0] = state
   actionseq[0] = action
   for i in range(1, timestep):
-    state, action, sp_likelihood, ap_q = agent.step(state, syllable, action)
+    state, action, sp_likelihood, ap_q = agent.step(state, syllable, action, temperature=0.3)
     # print(sp_likelihood, ap_q)
     stateseq[i] = state
     actionseq[i] = action
@@ -340,12 +340,12 @@ def plot_IG_skeleton(ig_matrix_agg_xyz, state_name, feature_dim, save_path):
     axes[i*2].scatter(
           *ymean_to_plot.T,
           c=node_colors[:n_bodyparts],
-          s=np.abs(ig_matrix_agg_xyz[i, :n_bodyparts])*10000,
+          s=np.abs(ig_matrix_agg_xyz[i, :n_bodyparts])*500,
           zorder=1)
     axes[i*2+1].scatter(
           *ymean_to_plot.T,
           c=node_colors[n_bodyparts:],
-          s=np.abs(ig_matrix_agg_xyz[i, n_bodyparts:])*10000,
+          s=np.abs(ig_matrix_agg_xyz[i, n_bodyparts:])*500,
           zorder=1)
 
     axes[i*2].set_title(f'F{i} state', fontsize=30)
@@ -375,7 +375,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
     ig_std_matrix_agg = ig_inf['ig_std_matrix_agg']
     return ig_matrix, ig_std_matrix, ig_matrix_agg, ig_std_matrix_agg
 
-  model = agent.phi
+  model = nn.Sequential(agent.phi, agent.critic)
   ig = IntegratedGradients(model)
   # sa_ar = torch.zeros((args.times, args.batch_size, agent.state_dim+agent.action_dim))
   ig_matrix_all = torch.zeros((times, agent.feature_dim, agent.state_dim+agent.action_dim))
@@ -1614,14 +1614,13 @@ if __name__ == "__main__":
   # cluster_in_phi_space(args, replay_buffer, agent)
   # args.times = 3
   # IntegratedGradients_attr(args, replay_buffer, agent)
-  # get_edges()
-  draw_IG_skeleton(args, replay_buffer, agent)
+  # draw_IG_skeleton(args, replay_buffer, agent)
   # visualize_wu(args, replay_buffer, agent)
   # action_loglikelihood(args, replay_buffer, agent)
   # action_profile(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
   # rollout(args, replay_buffer, agent, 13)
-  # rollout_multiple_syllables(args, replay_buffer, agent)
+  rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 
 

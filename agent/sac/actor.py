@@ -106,9 +106,9 @@ class MultiSoftmaxActor(nn.Module):
                             hidden_depth)
     self.apply(util.weight_init)
 
-  def forward(self, obs):
+  def forward(self, obs, temperature=1):
     logits = self.trunk(obs).reshape(*obs.shape[:-1], self.action_dim//self.n_action, self.n_action)
-    dist = pyd.Categorical(logits=logits)
+    dist = pyd.Categorical(logits=logits/temperature)
     return dist
 
   def select_action(self, obs):

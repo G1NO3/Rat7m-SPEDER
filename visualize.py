@@ -68,7 +68,7 @@ def rollout_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     rollout(args, dataset, agent, i)
 
-def rollout(args, dataset, agent, syllable, timestep=20):
+def rollout(args, dataset, agent, syllable, timestep=10):
   while True:
     sample = dataset.sample(args.batch_size)
     task = sample.task
@@ -88,7 +88,7 @@ def rollout(args, dataset, agent, syllable, timestep=20):
   stateseq[0] = state
   actionseq[0] = action
   for i in range(1, timestep):
-    state, action, sp_likelihood, ap_q = agent.step(state, syllable, action, temperature=0.3)
+    state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.5)
     # print(sp_likelihood, ap_q)
     stateseq[i] = state
     actionseq[i] = action
@@ -1179,7 +1179,7 @@ def action_profile_likelihood_discrete_batch(args, dataset, agent):
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
     # f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
     f.write(f'linear model peak score: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
-    f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
+    f.write(f'linear model higher than mean: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
     # f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
   print(text_path)
   return

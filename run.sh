@@ -1,9 +1,9 @@
 python main.py --alg spedersac --env kms --feature_dim 128 \
-                --max_timesteps 1000000 --dir S_f128_lasso_00_dataset200_CTRL_discrete \
+                --max_timesteps 1000000 --dir S_f128_lasso_00_dataset200_CTRL_discrete_CD \
                 --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.0 --feature_lr 0.0001
 # Caution
 # python visualize.py --alg spedersac --env kms --feature_dim 128 \
-#                 --max_timesteps 1000000 --dir S_f128_lasso_001_dataset200_doubleoptimized_uw1 --start_timesteps 200\
+#                 --max_timesteps 1000000 --dir S_f128_lasso_00_dataset200_discrete_CTRL --start_timesteps 200\
 #                 --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200
 # for i in 64 96 128
 # do  

@@ -153,23 +153,29 @@ class SPEDERSACAgent():
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                     hidden_depth=1).to(device)
         # self.critic = RFF_complex_critic(feature_dim=state_dim+n_task, hidden_dim=critic_and_actor_hidden_dim).to(device)
-        self.u = MLP(input_dim=self.n_task,
-                        output_dim=feature_dim,
-                        hidden_dim=critic_and_actor_hidden_dim).to(device)
+        # self.u = MLP(input_dim=self.n_task,
+        #                 output_dim=feature_dim,
+        #                 hidden_dim=critic_and_actor_hidden_dim).to(device)
         # self.u_target = copy.deepcopy(self.u)
         # self.critic = DoubleMLP(input_dim=n_task,
         #                   output_dim=feature_dim,
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                   hidden_depth=1).to(device)
-        self.critic = MLP(input_dim=feature_dim,
-                                    output_dim=feature_dim,
-                                    hidden_dim=critic_and_actor_hidden_dim,
-                                    hidden_depth=1).to(device)
+        # self.critic = MLP(input_dim=feature_dim,
+        #                             output_dim=feature_dim,
+        #                             hidden_dim=critic_and_actor_hidden_dim,
+        #                             hidden_depth=1).to(device)
+        self.critic = Norm1MLP(input_dim=feature_dim,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
-        self.u = MLP(input_dim=n_task,
-                     output_dim=feature_dim,
-                     hidden_dim=critic_and_actor_hidden_dim,
-                     hidden_depth=0).to(device)
+        # self.u = MLP(input_dim=n_task,
+        #              output_dim=feature_dim,
+        #              hidden_dim=critic_and_actor_hidden_dim,
+        #              hidden_depth=0).to(device)
+        self.u = Norm1MLP(input_dim=self.n_task,
+                    output_dim=feature_dim,
+                    hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
@@ -401,7 +407,8 @@ class SPEDERSACAgent():
         # q_all[:, batch_size:] = q_E
         # assert q_all.shape == (batch_size, batch_size+n_Gibbs)
         # label = torch.eye(batch_size, batch_size+n_Gibbs).to(self.device)
-        label = torch.eye(batch_size, batch_size).to(self.device)
+        label = torch.eye(batch_size).to(self.device)
+        assert q_all.shape == (batch_size, batch_size) == label.shape
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
         # calculate w
         # z_w = self.w(expert_task_onehot)
@@ -737,7 +744,7 @@ class SPEDERSACAgent():
             # print(dist.scale)
             # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         action_onehot = torch.eye(self.n_action)[action.long()]
-        action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], -1).to(self.device)    
+        action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], self.action_dim).to(self.device)    
         z_phi = self.phi(torch.concat([state, action_onehot], -1))
             # q = self.critic(torch.cat([z_phi, task_onehot], -1)).squeeze(-1)
         # q = torch.sum(z_phi * self.u(task_onehot)*self.beta, dim=-1, keepdim=False)

@@ -401,7 +401,7 @@ class SPEDERSACAgent():
         # q_all[:, batch_size:] = q_E
         # assert q_all.shape == (batch_size, batch_size+n_Gibbs)
         # label = torch.eye(batch_size, batch_size+n_Gibbs).to(self.device)
-        label = torch.zeros(batch_size, batch_size).to(self.device)
+        label = torch.eye(batch_size, batch_size).to(self.device)
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
         # calculate w
         # z_w = self.w(expert_task_onehot)

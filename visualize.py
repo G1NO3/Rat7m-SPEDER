@@ -68,7 +68,7 @@ def rollout_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     rollout(args, dataset, agent, i)
 
-def rollout(args, dataset, agent, syllable, timestep=10):
+def rollout(args, dataset, agent, syllable, timestep=20):
   while True:
     sample = dataset.sample(args.batch_size)
     task = sample.task
@@ -87,13 +87,22 @@ def rollout(args, dataset, agent, syllable, timestep=10):
   actionseq = torch.zeros((timestep, *action.shape))
   stateseq[0] = state
   actionseq[0] = action
+  ap_q_ar = torch.zeros((timestep, 1))
   for i in range(1, timestep):
-    state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.5)
-    # print(sp_likelihood, ap_q)
+    state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
+    print('sprime ll:',sp_likelihood, 'q::',ap_q)
+    ap_q_ar[i] = ap_q
     stateseq[i] = state
     actionseq[i] = action
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   plot_gif(stateseq.squeeze(1), save_path)
+  fig, ax = plt.subplots(1,1, figsize=(10,10))
+  ax.hist(ap_q_ar.reshape(-1), bins=20, alpha=0.6, density=True, color='orange')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}_ap_q.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
   
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]
@@ -1090,9 +1099,10 @@ def action_profile_likelihood_discrete(args, dataset, agent):
       # f.write(f'{logll[j]}\n')
       # print(logll[j])
     all_logll[i] = logll
+    print('logll:', logll.min(), logll.max())
     axes[i].bar(torch.arange(agent.n_action), logll)
-    axes[i].vlines(action[show_idx, i], logll.min(), logll.max(), color='r', linestyle='--', label='real a')
-    axes[i].vlines(action_pred[show_idx, i], logll.min(), logll.max(), color='k', linestyle='--', label='pred a')
+    axes[i].vlines(action[show_idx, i], 0, logll.max(), color='r', linestyle='--', label='real a')
+    axes[i].vlines(action_pred[show_idx, i], 0, logll.max(), color='k', linestyle='--', label='pred a')
     axes[i].legend()
     peak_i = torch.argmax(logll)
     # higher_than_80quantile = torch.where(logll[center] - torch.quantile(logll, 0.8, dim=-1)>0, True, False)
@@ -1603,7 +1613,7 @@ if __name__ == "__main__":
   # action_profile_likelihood_discrete(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
-  # action_test_logll(args, replay_buffer, agent)
+  action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)

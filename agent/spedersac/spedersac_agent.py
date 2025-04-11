@@ -385,30 +385,39 @@ class SPEDERSACAgent():
         batch_u = self.u(batch_task_onehot)
         assert batch_phi.shape == batch_u.shape
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
-        # n_Gibbs = 10
-        # q_all = torch.zeros(batch_size, batch_size).to(self.device)
-        # q_all[:, :batch_size] = q_data
-        q_all = q_data
+        n_Gibbs = 16
+        q_all = torch.zeros(batch_size, batch_size+n_Gibbs).to(self.device)
+        q_all[:, :batch_size] = q_data
+        # q_all = q_data
         # write a parallel version
-        # batch_action_Gibbs = expert_action.reshape(batch_size, 1, self.n_action_dim).expand(-1, n_Gibbs, -1)
-        # batch_state_Gibbs = expert_state.reshape(batch_size, 1, self.state_dim).expand(-1, n_Gibbs, -1)
-        # batch_task_Gibbs = expert_task.reshape(batch_size, 1, 1).expand(-1, n_Gibbs, -1)
-        # batch_action_prime = self.Gibbs_step(batch_state_Gibbs.reshape(-1, self.state_dim), \
-        #                                      batch_action_Gibbs.reshape(-1, self.n_action_dim), \
-        #                                         batch_task_Gibbs.reshape(-1, 1)).reshape(batch_size, n_Gibbs, self.n_action_dim)
-        # batch_action_prime_onehot = torch.eye(self.n_action)[batch_action_prime.long()].reshape(batch_size, n_Gibbs, self.action_dim).to(self.device)
-        # batch_state_action_Gibbs = torch.concat([batch_state_Gibbs, batch_action_prime_onehot], dim=-1)
-        # batch_phi_Gibbs = self.phi(batch_state_action_Gibbs).detach()
-        # batch_f_phi_Gibbs = self.critic(batch_phi_Gibbs)
-        # batch_task_onehot_Gibbs = torch.eye(self.n_task)[batch_task_Gibbs.long().squeeze(-1)].to(self.device)
-        # batch_u_Gibbs = self.u(batch_task_onehot_Gibbs)
-        # assert batch_phi_Gibbs.shape == batch_u_Gibbs.shape
-        # q_E = torch.sum(batch_f_phi_Gibbs * batch_u_Gibbs, dim=-1, keepdim=False)
-        # q_all[:, batch_size:] = q_E
-        # assert q_all.shape == (batch_size, batch_size+n_Gibbs)
-        # label = torch.eye(batch_size, batch_size+n_Gibbs).to(self.device)
-        label = torch.eye(batch_size).to(self.device)
-        assert q_all.shape == (batch_size, batch_size) == label.shape
+        batch_action_Gibbs = expert_action.reshape(batch_size, 1, self.n_action_dim).expand(-1, n_Gibbs, -1)
+        batch_state_Gibbs = expert_state.reshape(batch_size, 1, self.state_dim).expand(-1, n_Gibbs, -1)
+        batch_task_Gibbs = expert_task.reshape(batch_size, 1, 1).expand(-1, n_Gibbs, -1)
+        batch_action_prime = self.Gibbs_step(batch_state_Gibbs.reshape(-1, self.state_dim), \
+                                             batch_action_Gibbs.reshape(-1, self.n_action_dim), \
+                                                batch_task_Gibbs.reshape(-1, 1)).reshape(batch_size, n_Gibbs, self.n_action_dim)
+        batch_action_prime_onehot = torch.eye(self.n_action)[batch_action_prime.long()].reshape(batch_size, n_Gibbs, self.action_dim).to(self.device)
+        batch_state_action_Gibbs = torch.concat([batch_state_Gibbs, batch_action_prime_onehot], dim=-1)
+        batch_phi_Gibbs = self.phi(batch_state_action_Gibbs).detach()
+        batch_f_phi_Gibbs = self.critic(batch_phi_Gibbs)
+        batch_task_onehot_Gibbs = torch.eye(self.n_task)[batch_task_Gibbs.long().squeeze(-1)].to(self.device)
+        batch_u_Gibbs = self.u(batch_task_onehot_Gibbs)
+        assert batch_phi_Gibbs.shape == batch_u_Gibbs.shape
+        q_E = torch.sum(batch_f_phi_Gibbs * batch_u_Gibbs, dim=-1, keepdim=False)
+        q_all[:, batch_size:] = q_E
+        assert q_all.shape == (batch_size, batch_size+n_Gibbs)
+        label = torch.eye(batch_size, batch_size+n_Gibbs).to(self.device)
+        # interference_array = torch.randint_like(expert_action, -1, 2).to(self.device)
+        # batch_action_prime = torch.clamp(expert_action + interference_array, 0, self.n_action-1)
+        # batch_action_prime_onehot = torch.eye(self.n_action)[batch_action_prime.long()].reshape(1, batch_size, self.action_dim).to(self.device)
+        # batch_state_action_prime = torch.concat([batch_state.expand(-1, batch_size, -1), batch_action_prime_onehot.expand(batch_size, -1, -1)], dim=-1)
+        # batch_phi_prime = self.phi(batch_state_action_prime).detach()
+        # batch_f_phi_prime = self.critic(batch_phi_prime)
+        # batch_q_interfered = torch.sum(batch_f_phi_prime * batch_u, dim=-1, keepdim=False)
+        # q_all = torch.cat([q_data, batch_q_interfered], dim=-1)
+        # label = torch.eye(batch_size, batch_size*2).to(self.device)
+        # label = torch.eye(batch_size).to(self.device)
+        assert q_all.shape == label.shape
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
         # calculate w
         # z_w = self.w(expert_task_onehot)
@@ -799,10 +808,12 @@ class SPEDERSACAgent():
             task = torch.FloatTensor([syllable]).to(self.device).reshape(1,1)
             task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device).reshape(1,-1)
             next_action = self.Gibbs_sampling(state, action, task, temperature=temperature)
-            action_onehot = torch.eye(self.n_action)[next_action.long()].reshape(-1, self.action_dim).to(self.device)
-            z_phi = self.phi(torch.concat([state, action_onehot], -1))
+            next_action_onehot = torch.eye(self.n_action)[next_action.long()].reshape(-1, self.action_dim).to(self.device)
+            z_phi = self.phi(torch.concat([state, next_action_onehot], -1))
+            current_action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
+            current_z_phi = self.phi(torch.concat([state, current_action_onehot], -1))
             mu_next = self.mu(next_state)
-            sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
+            sp_likelihood = torch.sum(current_z_phi * mu_next, dim=-1)
             f_phi = self.critic(z_phi)
             q = torch.sum(f_phi * self.u(task_onehot), dim=-1, keepdim=False)
         return next_state, next_action, sp_likelihood, q

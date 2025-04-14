@@ -483,21 +483,19 @@ class SPEDERSACAgent():
             'q_data': q_data.mean().item(),
             'q_E': q_E.mean().item(),
         }
-    def MALA_step(self, batch):
-        # A serious problem is that the action is bounded. So maybe we should turn to discrete.
-        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+    def MALA_step(self, state, action, task):
         # print('expert_task', expert_task)
-        assert expert_state.shape[-1] == self.state_dim
-        assert expert_action.shape[-1] == self.action_dim
-        assert expert_next_state.shape[-1] == self.state_dim
-        assert expert_done.shape[-1] == 1
-        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        assert state.shape[-1] == self.state_dim
+        assert action.shape[-1] == self.action_dim
+        # assert expert_next_state.shape[-1] == self.state_dim
+        # assert expert_done.shape[-1] == 1
+        task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
-        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        assert task_onehot.shape == (state.shape[0], self.n_task)
         def potential(action):
-            z_phi = self.phi(torch.concat([expert_state, action], -1))
+            z_phi = self.phi(torch.concat([state, action], -1))
             f_phi = self.critic(z_phi)
-            z_u = self.u(expert_task_onehot)
+            z_u = self.u(task_onehot)
             q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
             return -q_data
 
@@ -507,25 +505,32 @@ class SPEDERSACAgent():
             difference = x_prime - x + step * grad
             log_prob = -torch.sum(difference ** 2, dim=-1, keepdim=True)/(4*step)
             return log_prob
-        expert_action.requires_grad = True
-        E = potential(expert_action).mean()
-        grad = torch.autograd.grad(E, expert_action)[0]
+        action.requires_grad_()
+        # print('action:', action)
+        E = potential(action).mean()
+        grad = torch.autograd.grad(E, action)[0]
         # print('expert_action grad 1:', grad)
         step = 1
-        action_prime = expert_action.detach() - step * grad + torch.randn_like(expert_action) * step/100
-        assert action_prime.shape == expert_action.shape
+        action_prime = action.detach() - step * grad
+        # print('action_prime:', action_prime)
+        assert action_prime.shape == action.shape
         # print(action_prime.shape, expert_action.shape)
-        action_prime = torch.clamp(action_prime, -0.05, 0.05)
+        # action_prime = torch.clamp(action_prime, -0.05, 0.05)
         # E_prime = potential(action_prime).mean()
-        log_ratio = -potential(action_prime) + potential(expert_action) \
-            + log_transition_prob(action_prime, expert_action, step) - log_transition_prob(expert_action, action_prime, step)
-        assert log_ratio.shape == (expert_action.shape[0], 1)
-        accept = torch.rand(expert_action.shape[0],1).to(self.device) < torch.exp(log_ratio)
+        # log_ratio = -potential(action_prime) + potential(action) \
+        #     + log_transition_prob(action_prime, action, step) - log_transition_prob(action, action_prime, step)
+        # assert log_ratio.shape == (action.shape[0], 1)
+        # accept = torch.rand(action.shape[0],1).to(self.device) < torch.exp(log_ratio)
         # print('ratio:',torch.exp(log_ratio))
-        assert action_prime.shape == expert_action.shape
-        action_prime = torch.where(accept, action_prime, expert_action).detach()
+        # assert action_prime.shape == action.shape
+        # action_prime = torch.where(accept, action_prime, action).detach()
         return action_prime
-        
+    def MALA_sampling(self, state, action, task, n=10):
+        action = torch.zeros_like(action).to(self.device)
+        for i in range(n):
+            action = self.MALA_step(state, action.detach(), task)
+        return action
+
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)
@@ -742,25 +747,19 @@ class SPEDERSACAgent():
         return next_state
 
     def step(self, state, task, action):
-        with torch.no_grad():
-            # next_state = self.generate_next_state(state, action)
-            # next_state = state + action
-            next_state = self.generate_next_state_discrete_action(state, action)
-            task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
-            dist = self.actor(torch.cat([next_state, task_onehot], -1))
-            # print('dist_mean:', dist.loc[0], 'dist_std:', dist.scale[0])
-            print('dist_logit:', dist.logits[0])
-            next_action = dist.sample()
-            action_onehot = torch.eye(self.n_action)[next_action.long()].reshape(-1, self.action_dim).to(self.device)
-            z_phi = self.phi(torch.concat([state, action_onehot], -1))
-            mu_next = self.mu(next_state)
-            sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
-            # u1, u2 = self.critic(task_onehot)
-            # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
-            # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-            # q = torch.min(q1, q2)
-            unnormlized_action_logprob = 0
-        return next_state, next_action, sp_likelihood, unnormlized_action_logprob
+        # next_state = self.generate_next_state(state, action)
+        next_state = state + action
+        # next_state = self.generate_next_state_discrete_action(state, action)
+        task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
+        task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
+        next_action = self.MALA_sampling(next_state, action, task)
+        z_phi = self.phi(torch.concat([state, next_action], -1))
+        mu_next = self.mu(next_state)
+        sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
+        f_phi = self.critic(z_phi)
+        z_u = self.u(task_onehot)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        return next_state, next_action, sp_likelihood, q
             
 
 

@@ -68,7 +68,7 @@ def rollout_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     rollout(args, dataset, agent, i)
 
-def rollout(args, dataset, agent, syllable, timestep=20):
+def rollout(args, dataset, agent, syllable, timestep=10):
   while True:
     sample = dataset.sample(args.batch_size)
     task = sample.task
@@ -89,6 +89,7 @@ def rollout(args, dataset, agent, syllable, timestep=20):
   actionseq[0] = action
   for i in range(1, timestep):
     state, action, sp_likelihood, ap_q = agent.step(state, syllable, action)
+    print(i, 'action:', action)
     # print(sp_likelihood, ap_q)
     stateseq[i] = state
     actionseq[i] = action
@@ -932,7 +933,7 @@ def action_test_logll(args, dataset, agent):
 def action_profile_likelihood(args, dataset, agent):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = 43
+  sample_idx = 78
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
@@ -1029,17 +1030,19 @@ def action_profile_likelihood_batch(args, dataset, agent):
     linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[1].detach().cpu()
     # print('linear model logll:', linear_model_logll.shape, 'logll:', logll.shape, 'quantile:', quantile.shape)
     assert linear_model_logll.shape == (batch_size, )
-    print('linear model logll:', linear_model_logll)
-    print('logll mean:', logll.mean(-1).mean(-1))
+    # print('linear model logll:', linear_model_logll)
+    # print('logll mean:', logll.mean(-1).mean(-1))
     # print('quantile:', quantile.mean(-1))
     # print('center:', center)
     # print('action_pred:', action_pred)
     # print('action:', action)
     # print('action_pred - action:', (action_pred - action))
     action_pred_idx = torch.round((action_pred - action)/(total_range/(bins-1)))+center
+    # print('action pred idx:', action_pred_idx)
     peak_score_linear = torch.where((action_pred_idx==peak_idx), 1., 0.).mean()
-    print('peak score linear:', peak_score_linear)
+    # print('peak score linear:', peak_score_linear)
     higher_than_mean_linear = torch.where(linear_model_logll - logll.mean(-1).mean(-1)>0, 1., 0.).mean()
+    # print('if higher than mean:', (linear_model_logll - logll.mean(-1).mean(-1)>0))
     higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
     linear_model_metric_matrix[i] = peak_score_linear, higher_than_mean_linear, higher_than_80quantile_linear
   # print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
@@ -1056,8 +1059,8 @@ def action_profile_likelihood_batch(args, dataset, agent):
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
     f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
     f.write(f'linear model peak score: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
-    f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
-    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
+    f.write(f'linear model higher than mean: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
+    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[2]:.4f} +- {linear_metric_std[2]:.4f}\n')
   print(text_path)
   return
 
@@ -1596,9 +1599,9 @@ if __name__ == "__main__":
   # show_last_weight(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
-  action_profile_likelihood(args, replay_buffer, agent)
+  # action_profile_likelihood(args, replay_buffer, agent)
   # action_profile_likelihood_discrete(args, replay_buffer, agent)
-  action_profile_likelihood_batch(args, replay_buffer, agent)
+  # action_profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   # action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
@@ -1618,7 +1621,7 @@ if __name__ == "__main__":
   # action_loglikelihood(args, replay_buffer, agent)
   # action_profile(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
-  # rollout(args, replay_buffer, agent, 13)
+  rollout(args, replay_buffer, agent, 2)
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

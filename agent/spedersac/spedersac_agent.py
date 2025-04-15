@@ -438,7 +438,7 @@ class SPEDERSACAgent():
         batch_u = self.u(batch_task_onehot)
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
         assert q_data.shape == (batch_size, batch_size)
-        perturbed_action = batch_action + torch.randn_like(batch_action) * 0.01
+        perturbed_action = batch_action + torch.randn_like(batch_action)
         perturbed_state_action = torch.concat([batch_state.expand(-1, batch_size, -1), perturbed_action.expand(batch_size, -1, -1)], dim=-1)
         perturbed_z_phi = self.phi(perturbed_state_action).detach()
         perturbed_f_phi = self.critic(perturbed_z_phi)

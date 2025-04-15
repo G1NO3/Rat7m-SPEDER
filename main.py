@@ -14,12 +14,14 @@ from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
 from utils.util import unpack_batch
+
+##TODO: when train, replace this with test_data
 def load_keymoseq(category, device='cuda:0'):
   state_dim = 16
   action_dim = 16
   n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  replay_buffer_path = f'./kms/{category}_data.pth'
+  replay_buffer_path = f'./kms/replay_buffer_mildnormalized200_discreteaction.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
   return replay_buffer, state_dim, action_dim, n_task

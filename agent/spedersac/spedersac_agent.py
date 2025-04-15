@@ -473,11 +473,14 @@ class SPEDERSACAgent():
             'q_data': q_data.mean().item(),
             'q_E': q_E.mean().item(),
         }
-    def Gibbs_step(self, state, action, task, temperature=1):
+    def Gibbs_step(self, state, initial_action, task, temperature=1):
         assert state.shape[-1] == self.state_dim
-        assert action.shape[-1] == self.n_action_dim
+        assert initial_action.shape[-1] == self.n_action_dim
         assert task.shape[-1] == 1
-        assert len(state.shape) == len(action.shape) == len(task.shape) == 2 
+        assert len(state.shape) == len(initial_action.shape) == len(task.shape) == 2 
+        # print('state:', state)
+        # print('initial_action:', initial_action)
+        # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         batch_size = state.shape[0]
         batch_state = state.reshape(batch_size, 1, self.state_dim).repeat(1, self.n_action, 1)
@@ -492,27 +495,31 @@ class SPEDERSACAgent():
             q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
             return -q_data
         def sample_one_dimension(action, dim):
+            # print('dim:', dim)
             new_action = action.reshape(batch_size, 1, self.n_action_dim).repeat(1, self.n_action, 1)
             new_action[:, :, dim] = torch.arange(self.n_action).reshape(1, -1).repeat(batch_size, 1) 
+            # print('new_action', new_action)
             new_potential = potential(new_action)
+            # print('q:', -new_potential)
             assert new_potential.shape == (batch_size, self.n_action)
             dist = torch.distributions.Categorical(logits=-new_potential/temperature)
             action_prime_dim = dist.sample()
+            # print('action_prime_dim', action_prime_dim)
             # print('action_prime_dim', action_prime_dim.shape)
             assert action_prime_dim.shape == (batch_size, )
             action_prime = action.clone()
             action_prime[:, dim] = action_prime_dim
             return action_prime
-        action_prime = action.clone()
+        action_prime = initial_action.clone()
         for i in range(self.n_action_dim):
             # print('action_prime:', action_prime)
             action_prime = sample_one_dimension(action_prime, i)
         return action_prime
-    def Gibbs_sampling(self, state, action, task, temperature=1, n=100):
+    def Gibbs_sampling(self, state, initial_action, task, temperature=1, n=1):
         # print('state:', state)
         for i in range(n):
             # print('action:', action)
-            action = self.Gibbs_step(state, action, task, temperature)
+            action = self.Gibbs_step(state, initial_action, task, temperature)
         return action
 
     def critic_step(self, batch, s_random, a_random, s_prime_random, task_random):
@@ -807,15 +814,18 @@ class SPEDERSACAgent():
             next_state = self.generate_next_state_discrete_action(state, action)
             task = torch.FloatTensor([syllable]).to(self.device).reshape(1,1)
             task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device).reshape(1,-1)
-            next_action = self.Gibbs_sampling(state, action, task, temperature=temperature)
+            next_action = self.Gibbs_sampling(next_state, action, task, temperature=temperature)
             next_action_onehot = torch.eye(self.n_action)[next_action.long()].reshape(-1, self.action_dim).to(self.device)
-            z_phi = self.phi(torch.concat([state, next_action_onehot], -1))
-            current_action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
-            current_z_phi = self.phi(torch.concat([state, current_action_onehot], -1))
+            z_phi = self.phi(torch.concat([next_state, next_action_onehot], -1))
+            # print('next z_phi:', z_phi)
+            prev_action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
+            current_z_phi = self.phi(torch.concat([state, prev_action_onehot], -1))
             mu_next = self.mu(next_state)
             sp_likelihood = torch.sum(current_z_phi * mu_next, dim=-1)
             f_phi = self.critic(z_phi)
+            # print('f_phi:', f_phi)
             q = torch.sum(f_phi * self.u(task_onehot), dim=-1, keepdim=False)
+            # print('q:', q)
         return next_state, next_action, sp_likelihood, q
             
 

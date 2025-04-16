@@ -1,5 +1,5 @@
 python main.py --alg spedersac --env kms --feature_dim 128 \
-                --max_timesteps 1000000 --dir S_f128_datasets200a200_CD_nonorm1 \
+                --max_timesteps 1000000 --dir S_f128_datasets200a200_CD_norm1_ctrl \
                 --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.01 --feature_lr 0.0001
 # Caution
 # python visualize.py --alg spedersac --env kms --feature_dim 128 \

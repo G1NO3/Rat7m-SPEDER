@@ -160,21 +160,21 @@ class SPEDERSACAgent():
         #                   output_dim=feature_dim,
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                   hidden_depth=1).to(device)
-        self.critic = MLP(input_dim=feature_dim,
-                                    output_dim=feature_dim,
-                                    hidden_dim=critic_and_actor_hidden_dim,
-                                    hidden_depth=1).to(device)
-        # self.critic = Norm1MLP(input_dim=feature_dim,
-        #                         output_dim=feature_dim,
-        #                         hidden_dim=critic_and_actor_hidden_dim).to(device)
+        # self.critic = MLP(input_dim=feature_dim,
+        #                             output_dim=feature_dim,
+        #                             hidden_dim=critic_and_actor_hidden_dim,
+        #                             hidden_depth=1).to(device)
+        self.critic = Norm1MLP(input_dim=feature_dim,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
-        self.u = MLP(input_dim=n_task,
-                     output_dim=feature_dim,
-                     hidden_dim=critic_and_actor_hidden_dim,
-                     hidden_depth=0).to(device)
-        # self.u = Norm1MLP(input_dim=self.n_task,
-        #                     output_dim=feature_dim,
-        #                     hidden_dim=critic_and_actor_hidden_dim).to(device)
+        # self.u = MLP(input_dim=n_task,
+                    #  output_dim=feature_dim,
+                    #  hidden_dim=critic_and_actor_hidden_dim,
+                    #  hidden_depth=0).to(device)
+        self.u = Norm1MLP(input_dim=self.n_task,
+                            output_dim=feature_dim,
+                            hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
@@ -438,15 +438,21 @@ class SPEDERSACAgent():
         batch_u = self.u(batch_task_onehot)
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
         assert q_data.shape == (batch_size, batch_size)
-        perturbed_action = batch_action + torch.randn_like(batch_action)
-        perturbed_state_action = torch.concat([batch_state.expand(-1, batch_size, -1), perturbed_action.expand(batch_size, -1, -1)], dim=-1)
+        n_LD = 32
+        batch_state_repeat = batch_state.repeat(1, n_LD, 1)
+        batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
+        batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
+        perturbed_action = self.MALA_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=20, step_size=1e-4)
+        perturbed_state_action = torch.concat([batch_state_repeat, perturbed_action], dim=-1)
         perturbed_z_phi = self.phi(perturbed_state_action).detach()
         perturbed_f_phi = self.critic(perturbed_z_phi)
-        q_perturbed = torch.sum(perturbed_f_phi * batch_u, dim=-1, keepdim=False)
-        assert q_perturbed.shape == (batch_size, batch_size)
+        perturbed_task_onehot = torch.eye(self.n_task)[batch_task_repeat.long().squeeze(-1)].to(self.device)
+        perturbed_u = self.u(perturbed_task_onehot)
+        q_perturbed = torch.sum(perturbed_f_phi * perturbed_u, dim=-1, keepdim=False)
+        assert q_perturbed.shape == (batch_size, n_LD)
         q_all = torch.concat([q_data, q_perturbed], dim=1)
 
-        label = torch.eye(batch_size, batch_size*2).to(self.device)
+        label = torch.eye(batch_size, batch_size+n_LD).to(self.device)
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
         loss = loss_ctrl
         self.critic_optimizer.zero_grad()
@@ -495,7 +501,8 @@ class SPEDERSACAgent():
         # assert expert_done.shape[-1] == 1
         task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
-        assert task_onehot.shape == (state.shape[0], self.n_task)
+        assert task_onehot.shape[-1] == self.n_task
+        assert len(task_onehot.shape) == len(action.shape) == len(state.shape)
         def potential(action):
             z_phi = self.phi(torch.concat([state, action], -1))
             f_phi = self.critic(z_phi)
@@ -661,7 +668,7 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        critic_info = self.critic_step_CD(batch_1, s_random, a_random, s_prime_random, task_random)
+        critic_info = self.critic_step_continuous(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
         # actor_info = self.update_actor_and_alpha(batch_1)

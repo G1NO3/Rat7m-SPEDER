@@ -19,7 +19,7 @@ def load_keymoseq(category, device='cuda:0'):
   action_dim = 16
   n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  replay_buffer_path = f'./kms/replay_buffer_mildnormalized_state200_action200.pth'
+  replay_buffer_path = f'./kms/{category}_data_continuous_a200.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
   print('sample state:', replay_buffer.state[0:5])

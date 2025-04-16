@@ -160,21 +160,21 @@ class SPEDERSACAgent():
         #                   output_dim=feature_dim,
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                   hidden_depth=1).to(device)
-        # self.critic = MLP(input_dim=feature_dim,
-        #                             output_dim=feature_dim,
-        #                             hidden_dim=critic_and_actor_hidden_dim,
-        #                             hidden_depth=1).to(device)
-        self.critic = Norm1MLP(input_dim=feature_dim,
-                                output_dim=feature_dim,
-                                hidden_dim=critic_and_actor_hidden_dim).to(device)
+        self.critic = MLP(input_dim=feature_dim,
+                                    output_dim=feature_dim,
+                                    hidden_dim=critic_and_actor_hidden_dim,
+                                    hidden_depth=1).to(device)
+        # self.critic = Norm1MLP(input_dim=feature_dim,
+        #                         output_dim=feature_dim,
+        #                         hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.critic_target = copy.deepcopy(self.critic)
-        # self.u = MLP(input_dim=n_task,
-        #              output_dim=feature_dim,
-        #              hidden_dim=critic_and_actor_hidden_dim,
-        #              hidden_depth=0).to(device)
-        self.u = Norm1MLP(input_dim=self.n_task,
-                            output_dim=feature_dim,
-                            hidden_dim=critic_and_actor_hidden_dim).to(device)
+        self.u = MLP(input_dim=n_task,
+                     output_dim=feature_dim,
+                     hidden_dim=critic_and_actor_hidden_dim,
+                     hidden_depth=0).to(device)
+        # self.u = Norm1MLP(input_dim=self.n_task,
+        #                     output_dim=feature_dim,
+        #                     hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
@@ -466,7 +466,7 @@ class SPEDERSACAgent():
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
-        action_prime = self.MALA_step(batch)
+        action_prime = self.MALA_sampling(expert_state, expert_action, expert_task, n=20, step_size=1e-3)
         z_u = self.u(expert_task_onehot)
         z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
         f_phi = self.critic(z_phi)
@@ -474,7 +474,9 @@ class SPEDERSACAgent():
         z_phi_prime = self.phi(torch.concat([expert_state, action_prime], -1)).detach()
         f_phi_prime = self.critic(z_phi_prime)
         q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
-        loss = (q_data - q_E).mean()
+        loss_q = (q_data - q_E).mean()
+        loss_reg = (q_data ** 2 + q_E ** 2).mean()
+        loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()
@@ -482,8 +484,10 @@ class SPEDERSACAgent():
             'loss_CD': loss.item(),
             'q_data': q_data.mean().item(),
             'q_E': q_E.mean().item(),
+            'loss_q': loss_q.item(),
+            'loss_reg': loss_reg.item(),
         }
-    def MALA_step(self, state, action, task):
+    def MALA_step(self, state, action, task, step_size=1e-4):
         # print('expert_task', expert_task)
         assert state.shape[-1] == self.state_dim
         assert action.shape[-1] == self.action_dim
@@ -509,9 +513,8 @@ class SPEDERSACAgent():
         # print('action:', action)
         E = potential(action).mean()
         grad = torch.autograd.grad(E, action)[0]
-        print('expert_action grad 1:', grad)
-        step = 1e-4
-        action_prime = action.detach() - step * grad + torch.randn_like(action) * step/10
+        # print('expert_action grad 1:', grad)
+        action_prime = action.detach() - step_size * grad + torch.randn_like(action) * step_size/10
         # print('action_prime:', action_prime)
         assert action_prime.shape == action.shape
         # print(action_prime.shape, expert_action.shape)
@@ -525,13 +528,13 @@ class SPEDERSACAgent():
         # assert action_prime.shape == action.shape
         # action_prime = torch.where(accept, action_prime, action).detach()
         return action_prime
-    def MALA_sampling(self, state, initial_action, task, n=1000):
+    def MALA_sampling(self, state, initial_action, task, n=1000, step_size=1e-4):
         # action = torch.zeros_like(initial_action).to(self.device)
         action = initial_action
         for i in range(n):
-            print('i:', i)
-            print('action:', action)
-            action = self.MALA_step(state, action.detach(), task)
+            # print('i:', i)
+            # print('action:', action)
+            action = self.MALA_step(state, action.detach(), task, step_size)
         return action
 
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
@@ -658,7 +661,7 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        critic_info = self.critic_step_continuous(batch_1, s_random, a_random, s_prime_random, task_random)
+        critic_info = self.critic_step_CD(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
         # actor_info = self.update_actor_and_alpha(batch_1)
@@ -749,14 +752,14 @@ class SPEDERSACAgent():
         next_state = state + action_continous
         return next_state
 
-    def step(self, state, action, task, temperature=1.0):
+    def step(self, state, action, task, temperature=1.0, n=1000, step_size=1e-4):
         # next_state = self.generate_next_state(state, action)
         next_state = state + action
         # next_state = self.generate_next_state_discrete_action(state, action)
         # print(task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
-        next_action = self.MALA_sampling(next_state, action, task)
+        next_action = self.MALA_sampling(next_state, action, task, n, step_size)
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)

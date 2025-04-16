@@ -104,10 +104,10 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
 def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  # sample_idx = int(np.where(dataset.task == syllable)[0][0])
-  # print('sample_idx:', sample_idx, type(sample_idx))
+  sample_idx = int(np.where(dataset.task == syllable)[0][0])
+  print('sample_idx:', sample_idx, type(sample_idx))
   # sample_idx = 354
-  sample_idx = 161
+  # sample_idx = 161
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   print('state:', state.shape, 'action:', action.shape)
   stateseq = torch.zeros((timestep, *state.shape))
@@ -145,7 +145,8 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
     # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=1)
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=1, 
+                                                              n=1000, step_size=1e-4)
     state = next_state
     action = next_action
     stateseq[i] = state
@@ -1714,8 +1715,8 @@ if __name__ == "__main__":
   # action_profile(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
   # rollout(args, replay_buffer, agent, 2)
-  rollout_check_profile(args, replay_buffer, agent, 4)
-  # rollout_check_profile_all(args, replay_buffer, agent)
+  # rollout_check_profile(args, replay_buffer, agent, 2)
+  rollout_check_profile_all(args, replay_buffer, agent)
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

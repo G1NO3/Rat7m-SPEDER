@@ -19,9 +19,17 @@ def load_keymoseq(category, device='cuda:0'):
   action_dim = 16
   n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  replay_buffer_path = f'./kms/{category}_data_continuous.pth'
+  replay_buffer_path = f'./kms/replay_buffer_mildnormalized_state200_action200.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
+  print('sample state:', replay_buffer.state[0:5])
+  print('sample action:', replay_buffer.action[0:5])
+  print('sample next state:', replay_buffer.next_state[0:5])
+  print('sample task:', replay_buffer.task[0:5])
+  print('sample next task:', replay_buffer.next_task[0:5])
+  print('sample reward:', replay_buffer.reward[0:5])
+  print('sample done:', replay_buffer.done[0:5])
+  assert np.isclose(replay_buffer.state[0:5]+replay_buffer.action[0:5], replay_buffer.next_state[0:5]).all()
   return replay_buffer, state_dim, action_dim, n_task
 
 def load_rat7m(category, device='cuda:0'):

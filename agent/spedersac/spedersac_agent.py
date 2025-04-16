@@ -509,9 +509,9 @@ class SPEDERSACAgent():
         # print('action:', action)
         E = potential(action).mean()
         grad = torch.autograd.grad(E, action)[0]
-        # print('expert_action grad 1:', grad)
-        step = 1
-        action_prime = action.detach() - step * grad
+        print('expert_action grad 1:', grad)
+        step = 1e-4
+        action_prime = action.detach() - step * grad + torch.randn_like(action) * step/10
         # print('action_prime:', action_prime)
         assert action_prime.shape == action.shape
         # print(action_prime.shape, expert_action.shape)
@@ -525,9 +525,12 @@ class SPEDERSACAgent():
         # assert action_prime.shape == action.shape
         # action_prime = torch.where(accept, action_prime, action).detach()
         return action_prime
-    def MALA_sampling(self, state, action, task, n=10):
-        action = torch.zeros_like(action).to(self.device)
+    def MALA_sampling(self, state, initial_action, task, n=1000):
+        # action = torch.zeros_like(initial_action).to(self.device)
+        action = initial_action
         for i in range(n):
+            print('i:', i)
+            print('action:', action)
             action = self.MALA_step(state, action.detach(), task)
         return action
 
@@ -746,17 +749,19 @@ class SPEDERSACAgent():
         next_state = state + action_continous
         return next_state
 
-    def step(self, state, task, action):
+    def step(self, state, action, task, temperature=1.0):
         # next_state = self.generate_next_state(state, action)
         next_state = state + action
         # next_state = self.generate_next_state_discrete_action(state, action)
+        # print(task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
         next_action = self.MALA_sampling(next_state, action, task)
-        z_phi = self.phi(torch.concat([state, next_action], -1))
+        z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
-        f_phi = self.critic(z_phi)
+        next_z_phi = self.phi(torch.concat([next_state, next_action], -1))
+        f_phi = self.critic(next_z_phi)
         z_u = self.u(task_onehot)
         q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
         return next_state, next_action, sp_likelihood, q

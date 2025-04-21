@@ -16,7 +16,7 @@ from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor, MultiSoftmaxActor
 from torchinfo import summary
 import numpy as np
-
+from functools import partial
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -442,7 +442,7 @@ class SPEDERSACAgent():
         batch_state_repeat = batch_state.repeat(1, n_LD, 1)
         batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
         batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
-        perturbed_action = self.MALA_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=20, step_size=1e-4)
+        perturbed_action = self.HMC_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=10, step_size=1e-3)
         perturbed_state_action = torch.concat([batch_state_repeat, perturbed_action], dim=-1)
         perturbed_z_phi = self.phi(perturbed_state_action).detach()
         perturbed_f_phi = self.critic(perturbed_z_phi)
@@ -543,7 +543,39 @@ class SPEDERSACAgent():
             # print('action:', action)
             action = self.MALA_step(state, action.detach(), task, step_size)
         return action
-
+    def potential(self, state, action, task_onehot):
+        z_phi = self.phi(torch.concat([state, action], -1))
+        f_phi = self.critic(z_phi)
+        z_u = self.u(task_onehot)
+        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        return -q_data
+    def HMC_step(self, state, initial_action, task, L=3, step_size=1e-4):
+        task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
+        assert task_onehot.shape == (*state.shape[:-1], self.n_task)
+        potential = partial(self.potential, state=state, task_onehot=task_onehot)
+        def Hamiltonian(action, r):
+            u = potential(action=action)
+            return u + 0.5 * torch.sum(r ** 2, dim=-1, keepdim=True)
+        def du(action):
+            action = action.detach()
+            action.requires_grad = True
+            grad = torch.autograd.grad(self.potential(state, action, task_onehot).mean(), action)[0]
+            return grad
+        r = torch.randn_like(initial_action).to(self.device) / 200
+        r0 = r.clone()
+        action = initial_action
+        for i in range(L):
+            r = r - step_size * du(action) / 2
+            action = action + step_size * r
+            r = r - step_size * du(action) / 2
+        indicator = torch.rand(*action.shape[:-1], 1).to(self.device) < torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0))
+        action = torch.where(indicator, action, initial_action).detach()
+        return action
+    def HMC_sampling(self, state, initial_action, task, n=100, step_size=1e-4):
+        action = initial_action
+        for i in range(n):
+            action = self.HMC_step(state, action.detach(), task, step_size=step_size)
+        return action
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)

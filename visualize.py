@@ -98,13 +98,34 @@ def rollout(args, dataset, agent, syllable, timestep=2):
   plot_gif(stateseq.squeeze(1), save_path)
 
 def rollout_check_profile_all(args, dataset, agent, timestep=10):
+  peak_score_ar = np.zeros((agent.n_task, ))
+  higher_than_mean_ar = np.zeros((agent.n_task, ))
+  higher_than_80quantile_ar = np.zeros((agent.n_task, ))
+  action_to_linear_score_ar = np.zeros((agent.n_task, ))
+  ap_q_ar = np.zeros((agent.n_task, ))
+  stateseq_ar = np.zeros((agent.n_task, timestep, agent.state_dim))
+  np.random.seed(0)
   for i in range(agent.n_task):
-    rollout_check_profile(args, dataset, agent, i, timestep)
+    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q, stateseq = \
+      rollout_check_profile(args, dataset, agent, i, timestep)
+    peak_score_ar[i] = peak_score
+    higher_than_mean_ar[i] = higher_than_mean
+    higher_than_80quantile_ar[i] = higher_than_80quantile
+    action_to_linear_score_ar[i] = action_to_linear_score
+    ap_q_ar[i] = ap_q
+    stateseq_ar[i] = stateseq.squeeze(1)
+  plot_gif_all_syllables(stateseq_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout.gif')
+  with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_profile.txt', 'w') as f:
+    f.write('syllable, peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q\n')
+    for i in range(agent.n_task):
+      f.write(f'{i}, {peak_score_ar[i]}, {higher_than_mean_ar[i]}, {higher_than_80quantile_ar[i]}, {action_to_linear_score_ar[i]}, {ap_q_ar[i]}\n')
 
 def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = int(np.where(dataset.task == syllable)[0][0])
+  # sample_idx = int(np.where(dataset.task == syllable)[0][0])
+  all_idx = np.where(dataset.task == syllable)[0]
+  sample_idx = int(all_idx[np.random.randint(0, len(all_idx))])
   print('sample_idx:', sample_idx, type(sample_idx))
   # sample_idx = 354
   # sample_idx = 161
@@ -120,6 +141,11 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
   lr = torch.load('./kms/linear_model.pth')
   batch_size = 1
   bins = 21
+  peak_score_ar = np.zeros((timestep, ))
+  higher_than_mean_ar = np.zeros((timestep, ))
+  higher_than_80quantile_ar = np.zeros((timestep, ))
+  action_to_linear_score_ar = np.zeros((timestep, ))
+  ap_q_ar = np.zeros((timestep, ))
   for i in range(1,timestep):
     print(i, 'action:', action)
     action_pred = torch.FloatTensor(lr.predict(state.detach().cpu().numpy()))
@@ -140,19 +166,26 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
     batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
     # print('batch_q:', batch_q.shape)
     assert batch_q.shape == (agent.action_dim, bins)
-    draw_profile(agent, batch_q, new_action, state, action, action_pred, i, args.scale_factor)
+    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action, state, action, action_pred, i, args.scale_factor)
+    peak_score_ar[i] = peak_score
+    higher_than_mean_ar[i] = higher_than_mean
+    higher_than_80quantile_ar[i] = higher_than_80quantile
+    action_to_linear_score_ar[i] = action_to_linear_score
     # state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
     # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=1, 
-                                                              n=1000, step_size=1e-4)
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=10, 
+                                                              n=500, step_size=1e-3)
+    ap_q_ar[i] = ap_q
     state = next_state
     action = next_action
     stateseq[i] = state
     actionseq[i] = action
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
-  plot_gif(stateseq.squeeze(1), save_path)
+  # save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
+  # plot_gif(stateseq.squeeze(1), save_path)
+  return peak_score_ar.mean(), higher_than_mean_ar.mean(), higher_than_80quantile_ar.mean(), action_to_linear_score_ar.mean(), \
+          ap_q_ar.mean(), stateseq
 
 def draw_profile(agent, q, batch_action, state, action, action_pred, timestep, scale_factor):
   fig, axes = plt.subplots(4,4, figsize=(10,10))
@@ -188,6 +221,53 @@ def draw_profile(agent, q, batch_action, state, action, action_pred, timestep, s
     os.makedirs(os.path.dirname(fig_path))
   plt.savefig(fig_path)
   print(fig_path)
+  return peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score
+
+def plot_gif_all_syllables(state_seqs_all, save_path):
+  # state_seqs_all: [syllable, timestep, state_dim]
+  edges, state_name, n_dim = get_edges(state_seqs_all.shape[2])
+  fig, axis = plt.subplots(3, 4, figsize=(20, 15))
+  n_bodyparts = len(state_name)
+  n_img = state_seqs_all.shape[1]
+  n_syllable = state_seqs_all.shape[0]
+  dims, name = [0,1], 'xy'
+  state_seqs_to_plot = state_seqs_all.reshape(-1, n_img, n_bodyparts, 2)
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  rasters = []
+  ymin = np.min(state_seqs_to_plot[...,1], axis=(-1,-2))
+  ymax = np.max(state_seqs_to_plot[...,1], axis=(-1,-2))
+  xmin = np.min(state_seqs_to_plot[...,0], axis=(-1,-2))
+  xmax = np.max(state_seqs_to_plot[...,0], axis=(-1,-2))
+  for i in range(n_img):
+    for j in range(n_syllable):
+      axis[j//4, j%4].clear()
+      for p1, p2 in edges:
+        axis[j//4, j%4].plot(
+            *state_seqs_to_plot[j, i, (p1, p2)].T,
+            color=keypoint_colors[p1],
+            linewidth=5.0)
+      axis[j//4, j%4].scatter(
+          *state_seqs_to_plot[j, i].T,
+          c=keypoint_colors,
+          s=100)
+      axis[j//4, j%4].set_title(f'syllable {j}', fontsize=30)
+      axis[j//4, j%4].axis('off')
+      axis[j//4, j%4].set_xlim(xmin[j], xmax[j])
+      axis[j//4, j%4].set_ylim(ymin[j], ymax[j])
+    rasters.append(rasterize_figure(fig))
+  pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
+  # Save the PIL Images as an animated GIF
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  pil_images[0].save(
+      save_path,
+      save_all=True,
+      append_images=pil_images[1:],
+      duration=100,
+      loop=0,
+  )
+  print(save_path)
 
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]

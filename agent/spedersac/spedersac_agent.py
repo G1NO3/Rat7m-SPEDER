@@ -16,7 +16,8 @@ from agent.sac.sac_agent import SACAgent, DoubleQCritic
 from agent.sac.actor import DiagGaussianActor, MultiSoftmaxActor
 from torchinfo import summary
 import numpy as np
-
+from functools import partial
+import hamiltorch
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -385,7 +386,7 @@ class SPEDERSACAgent():
         # u1, u2 = self.critic(expert_task_onehot)
         # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
         # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=True)
         # assert q1.shape == q_target.shape
         # assert q2.shape == q_target.shape
         # loss_q1 = torch.nn.MSELoss()(q_target, q1)
@@ -466,21 +467,16 @@ class SPEDERSACAgent():
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
-        action_prime = self.MALA_sampling(expert_state, expert_action, expert_task, n=10, step_size=1e-2)
+        action_prime = self.HMC_sampling(expert_state, expert_action, expert_task, n=20, step_size=1e-3)
         z_u = self.u(expert_task_onehot)
         z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
         f_phi = self.critic(z_phi)
         q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
         z_phi_prime = self.phi(torch.concat([expert_state, action_prime], -1)).detach()
         f_phi_prime = self.critic(z_phi_prime)
-        q_E1 = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
-        action_prime2 = self.MALA_sampling(expert_state, expert_action, expert_task, n=10, step_size=1e-2)
-        z_phi_prime2 = self.phi(torch.concat([expert_state, action_prime2], -1)).detach()
-        f_phi_prime2 = self.critic(z_phi_prime2)
-        q_E2 = torch.sum(f_phi_prime2 * z_u, dim=-1, keepdim=True)
-        q_E = (q_E1 + q_E2) / 2
+        q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
         loss_q = (q_data - q_E).mean()
-        loss_reg = (q_data ** 2 + q_E1 ** 2/2 + q_E2 ** 2/2).mean()
+        loss_reg = (q_data ** 2 + q_E ** 2).mean()
         loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -492,6 +488,13 @@ class SPEDERSACAgent():
             'loss_q': loss_q.item(),
             'loss_reg': loss_reg.item(),
         }
+    def potential(self, state, action, task_onehot, temperature=1.0):
+        z_phi = self.phi(torch.concat([state, action], -1))
+        f_phi = self.critic(z_phi)
+        z_u = self.u(task_onehot)
+        q_data = -torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
+        return -q_data
+
     def MALA_step(self, state, action, task, step_size=1e-4):
         # print('expert_task', expert_task)
         assert state.shape[-1] == self.state_dim
@@ -501,13 +504,7 @@ class SPEDERSACAgent():
         task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert task_onehot.shape == (state.shape[0], self.n_task)
-        def potential(action):
-            z_phi = self.phi(torch.concat([state, action], -1))
-            f_phi = self.critic(z_phi)
-            z_u = self.u(task_onehot)
-            q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
-            return -q_data
-
+        potential = partial(self.potential, state=state, task_onehot=task_onehot)
         def log_transition_prob(x, x_prime, step):
             x.requires_grad = True
             grad = torch.autograd.grad(potential(x).mean(), x)[0]
@@ -516,7 +513,7 @@ class SPEDERSACAgent():
             return log_prob
         action.requires_grad_()
         # print('action:', action)
-        E = potential(action).mean()
+        E = potential(action=action).mean()
         grad = torch.autograd.grad(E, action)[0]
         # print('expert_action grad 1:', grad)
         action_prime = action.detach() - step_size * grad + torch.randn_like(action) * step_size/10
@@ -526,7 +523,7 @@ class SPEDERSACAgent():
         # action_prime = torch.clamp(action_prime, -0.05, 0.05)
         # E_prime = potential(action_prime).mean()
         # log_ratio = -potential(action_prime) + potential(action) \
-        #     + log_transition_prob(action_prime, action, step) - log_transition_prob(action, action_prime, step)
+        #     + log_transition_prob(action_prime, action, step_size) - log_transition_prob(action, action_prime, step_size)
         # assert log_ratio.shape == (action.shape[0], 1)
         # accept = torch.rand(action.shape[0],1).to(self.device) < torch.exp(log_ratio)
         # print('ratio:',torch.exp(log_ratio))
@@ -541,6 +538,48 @@ class SPEDERSACAgent():
             # print('action:', action)
             action = self.MALA_step(state, action.detach(), task, step_size)
         return action
+    def HMC_step(self, state, initial_action, task, L=5, step_size=1e-4, temperature=1.0):
+        task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
+        assert task_onehot.shape == (state.shape[0], self.n_task)
+        potential = partial(self.potential, state=state, task_onehot=task_onehot, temperature=temperature)
+        def Hamiltonian(action, r):
+            u = potential(action=action).mean()
+            return u + 0.5 * torch.sum(r ** 2, dim=-1, keepdim=True)
+        def du(action):
+            action = action.detach()
+            action.requires_grad = True
+            grad = torch.autograd.grad(self.potential(state, action, task_onehot, temperature).mean(), action)[0]
+            return grad
+        r = torch.randn_like(initial_action).to(self.device) / 200
+        r0 = r.clone()
+        action = initial_action
+        for i in range(L):
+            r = r - step_size * du(action) / 2
+            action = action + step_size * r
+            r = r - step_size * du(action) / 2
+        if torch.rand(1).to(self.device) > torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)):
+            action = initial_action
+        return action
+    def HMC_sampling(self, state, initial_action, task, n=100, step_size=1e-4, temperature=1.0):
+        action = initial_action
+        for i in range(n):
+            action = self.HMC_step(state, action.detach(), task, step_size=step_size, temperature=temperature)
+        return action
+    def HMC_sampling_2(self, state, initial_action, task, n=100, step_size=1e-4, temperature=1.0):
+        state = state.squeeze(0)
+        def log_prob_unnormalized(action):
+            task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device).squeeze(0)
+            assert task_onehot.shape == (self.n_task,)
+            log_prob = -self.potential(state, action, task_onehot, temperature).mean()
+            return log_prob
+        num_steps_per_sample = 5
+        inv_mass = torch.ones(self.action_dim)/2
+        hamiltorch.set_random_seed(123)
+        params_init = initial_action.reshape(-1)
+        params_hmc = hamiltorch.sample(log_prob_func=log_prob_unnormalized, params_init=params_init,  num_samples=n, step_size=step_size, 
+                                    num_steps_per_sample=num_steps_per_sample, inv_mass=inv_mass)
+        sample = torch.stack(params_hmc)[-1]
+        return sample.unsqueeze(0)
 
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
@@ -720,7 +759,7 @@ class SPEDERSACAgent():
         # f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
         # z_w = self.w(task_onehot)
-        q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
 
 
             # u1, u2 = self.critic(task_onehot)
@@ -764,14 +803,14 @@ class SPEDERSACAgent():
         # print(task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
-        next_action = self.MALA_sampling(next_state, action, task, n, step_size)
+        next_action = self.HMC_sampling(next_state, action, task, n, step_size, temperature)
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
         next_z_phi = self.phi(torch.concat([next_state, next_action], -1))
         f_phi = self.critic(next_z_phi)
         z_u = self.u(task_onehot)
-        q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
         return next_state, next_action, sp_likelihood, q
             
 

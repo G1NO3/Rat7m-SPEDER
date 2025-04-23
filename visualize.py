@@ -104,10 +104,10 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
   action_to_linear_score_ar = np.zeros((agent.n_task, ))
   ap_q_ar = np.zeros((agent.n_task, ))
   stateseq_ar = np.zeros((agent.n_task, timestep, agent.state_dim))
-  np.random.seed(0)
-  for i in range(agent.n_task):
+  np.random.seed(4)
+  for i in [2,4]:
     peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q, stateseq = \
-      rollout_check_profile(args, dataset, agent, i, timestep)
+      rollout_check_profile(args, dataset, agent, i, timestep, temperature=1, n=1000, step_size=1e-4)
     peak_score_ar[i] = peak_score
     higher_than_mean_ar[i] = higher_than_mean
     higher_than_80quantile_ar[i] = higher_than_80quantile
@@ -120,7 +120,7 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
     for i in range(agent.n_task):
       f.write(f'{i}, {peak_score_ar[i]}, {higher_than_mean_ar[i]}, {higher_than_80quantile_ar[i]}, {action_to_linear_score_ar[i]}, {ap_q_ar[i]}\n')
 
-def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
+def rollout_check_profile(args, dataset, agent, syllable, timestep=10, temperature=1, n=1000, step_size=1e-3):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
   # sample_idx = int(np.where(dataset.task == syllable)[0][0])
@@ -175,7 +175,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
     # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=1, 
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, 6-syllable, temperature=1, 
                                                               n=1000, step_size=1e-3)
     ap_q_ar[i] = ap_q
     state = next_state
@@ -1678,6 +1678,13 @@ def show_uw(args, dataset, agent):
   # u1, u2 = agent.critic(task_all)
   u_all = agent.u(task_all)
   w_all = agent.w(task_all)
+  for name, param in agent.u.named_parameters():
+    print(name, param)
+  params = dict(agent.u.named_parameters())
+  weight = params['trunk.0.weight'].detach().cpu().numpy()
+  print('weight:', weight.shape)
+  bias = params['trunk.0.bias'].detach().cpu().numpy()  
+  print('bias:', bias.shape)
   # u = u1.detach().cpu().numpy()
   u = u_all.detach().cpu().numpy()
   w = w_all.detach().cpu().numpy()
@@ -1685,15 +1692,20 @@ def show_uw(args, dataset, agent):
   save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_dir_path):
     os.makedirs(save_dir_path)
-  fig, axes = plt.subplots(2,1, figsize=(15,10))
+  fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
-  for i in range(agent.n_task):
-    axes[0].plot(u[i], label=i)
-    axes[1].plot(w[i], label=i)
+  for i in [2,4]:
+    predicted_ui = weight[:,i] + bias
+    axes[0].plot(predicted_ui, label=i)
+    axes[1].plot(weight[:,i], label=i)
+    # axes[1].plot(w[i], label=i)
+    print('u:', u[i], 'w:', w[i])
+  axes[2].plot(bias, label='bias')
   axes[0].set_title('u')
-  axes[1].set_title('w')
+  # axes[1].set_title('w')
   axes[0].legend()
   axes[1].legend()
+  axes[2].legend()
   # axes[1].hist(u.flatten(), bins=20, density=True, color='orange')
   save_path = f'{save_dir_path}/uw.png'
   plt.savefig(save_path)
@@ -1791,7 +1803,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.device)
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.dir, args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
   torch.manual_seed(args.seed)
@@ -1821,6 +1833,7 @@ if __name__ == "__main__":
   kwargs['n_task'] = n_task
   kwargs['tau'] = args.tau
   kwargs['hidden_dim'] = args.hidden_dim  
+  kwargs['directory'] = args.dir
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   # agent = spedersac_agent.QR_IRLAgent(**kwargs)
   # agent = spedersac_agent.SimpleWorldModel(**kwargs)
@@ -1831,18 +1844,18 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  show_uw(args, replay_buffer, agent)
+  # show_uw(args, replay_buffer, agent)
   # show_phi_weight(args, replay_buffer, agent)
   # show_last_weight(args, replay_buffer, agent)
-  profile_likelihood(args, replay_buffer, agent)
-  profile_likelihood_batch(args, replay_buffer, agent)
-  action_profile_likelihood(args, replay_buffer, agent)
+  # profile_likelihood(args, replay_buffer, agent)
+  # profile_likelihood_batch(args, replay_buffer, agent)
+  # action_profile_likelihood(args, replay_buffer, agent)
   # action_profile_likelihood_discrete(args, replay_buffer, agent)
-  action_profile_likelihood_batch(args, replay_buffer, agent)
+  # action_profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
-  action_test_logll(args, replay_buffer, agent)
-  test_logll_smoothly(args, replay_buffer, agent)
-  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # action_test_logll(args, replay_buffer, agent)
+  # test_logll_smoothly(args, replay_buffer, agent)
+  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)
   # density_trajectory(args, replay_buffer, agent)
   # optimize_next_state(args, replay_buffer, agent)
@@ -1860,7 +1873,7 @@ if __name__ == "__main__":
   # check_action_space(args, replay_buffer, agent)
   # rollout(args, replay_buffer, agent, 2)
   # rollout_check_profile(args, replay_buffer, agent, 2)
-  # rollout_check_profile_all(args, replay_buffer, agent)
+  rollout_check_profile_all(args, replay_buffer, agent)
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

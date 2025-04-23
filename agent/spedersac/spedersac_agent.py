@@ -54,6 +54,7 @@ class SPEDERSACAgent():
             lasso_coef=1e-3,
             n_task=3,
             learnable_temperature=False,
+            directory=None
     ):
 
         # super().__init__(
@@ -161,21 +162,29 @@ class SPEDERSACAgent():
         #                   output_dim=feature_dim,
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                   hidden_depth=1).to(device)
-        self.critic = MLP(input_dim=feature_dim,
-                                    output_dim=feature_dim,
-                                    hidden_dim=critic_and_actor_hidden_dim,
-                                    hidden_depth=1).to(device)
-        # self.critic = Norm1MLP(input_dim=feature_dim,
-        #                         output_dim=feature_dim,
-        #                         hidden_dim=critic_and_actor_hidden_dim).to(device)
+        if 'Yilun' in directory:
+            print('Using Yilun potential')
+            self.u = MLP(input_dim=n_task,
+                output_dim=feature_dim,
+                hidden_dim=critic_and_actor_hidden_dim,
+                hidden_depth=0).to(device)
+            self.critic = MLP(input_dim=feature_dim,
+                            output_dim=feature_dim,
+                            hidden_dim=critic_and_actor_hidden_dim,
+                            hidden_depth=1).to(device)
+            self.potential = self.Yilun_potential
+            self.critic_step = self.critic_step_CD
+        else:
+            print('Using Norm1MLP potential')
+            self.u = Norm1MLP(input_dim=self.n_task,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim).to(device)
+            self.critic = Norm1MLP(input_dim=feature_dim,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim).to(device)
+            self.potential = self.continuous_potential
+            self.critic_step = self.critic_step_continuous
         self.critic_target = copy.deepcopy(self.critic)
-        self.u = MLP(input_dim=n_task,
-                     output_dim=feature_dim,
-                     hidden_dim=critic_and_actor_hidden_dim,
-                     hidden_depth=0).to(device)
-        # self.u = Norm1MLP(input_dim=self.n_task,
-        #                     output_dim=feature_dim,
-        #                     hidden_dim=critic_and_actor_hidden_dim).to(device)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
@@ -476,7 +485,7 @@ class SPEDERSACAgent():
         f_phi_prime = self.critic(z_phi_prime)
         q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
         loss_q = (q_data - q_E).mean()
-        loss_reg = (q_data ** 2 + q_E ** 2).mean()
+        loss_reg = (q_data ** 2 + q_E ** 2).mean() * 0.1
         loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -488,12 +497,15 @@ class SPEDERSACAgent():
             'loss_q': loss_q.item(),
             'loss_reg': loss_reg.item(),
         }
-    def potential(self, state, action, task_onehot, temperature=1.0):
+
+    def continuous_potential(self, state, action, task_onehot, temperature=1.0):
         z_phi = self.phi(torch.concat([state, action], -1))
         f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
-        q_data = -torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
+        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
         return -q_data
+    def Yilun_potential(self, state, action, task_onehot, temperature=1.0):
+        return -self.continuous_potential(state, action, task_onehot, temperature=temperature)
 
     def MALA_step(self, state, action, task, step_size=1e-4):
         # print('expert_task', expert_task)
@@ -706,7 +718,7 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        critic_info = self.critic_step_CD(batch_1, s_random, a_random, s_prime_random, task_random)
+        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
         # actor_info = self.update_actor_and_alpha(batch_1)
@@ -803,6 +815,7 @@ class SPEDERSACAgent():
         next_state = state + action
         # next_state = self.generate_next_state_discrete_action(state, action)
         # print(task)
+        # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
         next_action = self.HMC_sampling(next_state, action, task, n, step_size, temperature)

@@ -175,8 +175,8 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10):
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
     # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=10, 
-                                                              n=500, step_size=1e-3)
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=1, 
+                                                              n=1000, step_size=1e-3)
     ap_q_ar[i] = ap_q
     state = next_state
     action = next_action
@@ -271,6 +271,7 @@ def plot_gif_all_syllables(state_seqs_all, save_path):
 
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]
+  clockwise, pc_to_plot = is_clockwise(stateseq)
   edges, state_name, n_dim = get_edges(stateseq.shape[1])
   fig, axis = plt.subplots(1, 1, figsize=(5, 6))
   n_bodyparts = len(state_name)
@@ -282,6 +283,7 @@ def plot_gif(stateseq, save_path):
     dims, name = [0,1], 'xy'
     state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
     
+  state_seq_to_plot -= state_seq_to_plot.mean(axis=(0,1), keepdims=True)
   cmap = plt.cm.get_cmap('viridis')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   rasters = []
@@ -289,19 +291,31 @@ def plot_gif(stateseq, save_path):
   ymax = state_seq_to_plot[:,:,1].max()
   xmin = state_seq_to_plot[:,:,0].min()
   xmax = state_seq_to_plot[:,:,0].max()
+  aymin=-0.2
+  aymax=0.2
+  axmin=-0.2
+  axmax=0.2
+  if aymin > ymin or aymax < ymax or axmin > xmin or axmax < xmax:
+    aymin = -0.4
+    aymax = 0.4
+    axmin = -0.4
+    axmax = 0.4
   for i in range(n_img):
     axis.clear()
     for p1, p2 in edges:
       axis.plot(
           *state_seq_to_plot[i, (p1, p2)].T,
           color=keypoint_colors[p1],
-          linewidth=5.0)
+          linewidth=5.0,zorder=0)
     axis.scatter(
         *state_seq_to_plot[i].T,
         c=keypoint_colors,
-        s=100)
-    axis.set_xlim(xmin, xmax)
-    axis.set_ylim(ymin, ymax)
+        s=100,zorder=0)
+    axis.quiver(0, 0, pc_to_plot[i,0], pc_to_plot[i,1], angles='xy', scale_units='xy', scale=10, color='r',
+                zorder=1)
+    axis.set_title(f'clockwise:{clockwise}', fontsize=30)
+    axis.set_xlim(axmin, axmax)
+    axis.set_ylim(aymin, aymax)
     
     rasters.append(rasterize_figure(fig))
 
@@ -325,6 +339,56 @@ def rasterize_figure(fig):
   raster_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
   raster = raster_flat.reshape((height, width, 3))
   return raster
+
+def is_clockwise(stateseq):
+  # stateseq: [timestep, state_dim]
+  edges, state_name, n_dim = get_edges(stateseq.shape[1])
+  head_idx = state_name.index('head')
+  n_bodyparts = len(state_name)
+  n_img = stateseq.shape[0]
+  state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
+  state_seq_to_plot = state_seq_to_plot - state_seq_to_plot.mean(axis=1, keepdims=True)
+  _, _, vhs = np.linalg.svd(state_seq_to_plot)
+  pc_to_plot = vhs[:,0]
+  head_vector = state_seq_to_plot[:, head_idx, :]
+  flip_sign = np.where(np.sum(head_vector*pc_to_plot, axis=-1, keepdims=True) < 0, -1, 1)
+  pc_to_plot = pc_to_plot * flip_sign
+  pc_seq_0 = pc_to_plot[:-1]
+  pc_seq_1 = pc_to_plot[1:]
+  cross_product = pc_seq_0[:,0]*pc_seq_1[:,1] - pc_seq_0[:,1]*pc_seq_1[:,0]
+  # cross_product = state_seq_0[:,0]*state_seq_1[:,1] - state_seq_0[:,1]*state_seq_1[:,0]
+  clockwise = np.sum(cross_product) < 0
+  return clockwise, pc_to_plot
+
+def plot_figure_PC(state, save_path):
+  # state: [state_dim, ]
+  edges, state_name, n_dim = get_edges(state.shape[-1])
+  fig, axis = plt.subplots(1, 1, figsize=(5, 6))
+  state_to_plot = state.reshape(-1, 2)
+  state_to_plot -= state_to_plot.mean(axis=0)
+  _, _, vhs = np.linalg.svd(state_to_plot)
+  pc_to_plot = vhs[0]
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  xmin = min(state_to_plot[:, 0].min(), pc_to_plot[0])
+  xmax = max(state_to_plot[:, 0].max(), pc_to_plot[0])
+  ymin = min(state_to_plot[:, 1].min(), pc_to_plot[1])
+  ymax = max(state_to_plot[:, 1].max(), pc_to_plot[1])
+  axis.set_xlim(xmin, xmax)
+  axis.set_ylim(ymin, ymax)
+  for p1, p2 in edges:
+    axis.plot(
+        *state_to_plot[(p1, p2),:].T,
+        color=keypoint_colors[p1],
+        linewidth=5.0)
+  axis.scatter(
+      *state_to_plot.T,
+      c=keypoint_colors,
+      s=100)
+  axis.quiver(0, 0, pc_to_plot[0], pc_to_plot[1], angles='xy', scale_units='xy', scale=1, color='r')
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
 
 def check_action_space(args, dataset, agent):
   times = 100
@@ -1767,18 +1831,18 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  # show_uw(args, replay_buffer, agent)
+  show_uw(args, replay_buffer, agent)
   # show_phi_weight(args, replay_buffer, agent)
   # show_last_weight(args, replay_buffer, agent)
-  # profile_likelihood(args, replay_buffer, agent)
-  # profile_likelihood_batch(args, replay_buffer, agent)
-  # action_profile_likelihood(args, replay_buffer, agent)
+  profile_likelihood(args, replay_buffer, agent)
+  profile_likelihood_batch(args, replay_buffer, agent)
+  action_profile_likelihood(args, replay_buffer, agent)
   # action_profile_likelihood_discrete(args, replay_buffer, agent)
-  # action_profile_likelihood_batch(args, replay_buffer, agent)
+  action_profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
-  # action_test_logll(args, replay_buffer, agent)
-  # test_logll_smoothly(args, replay_buffer, agent)
-  # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  action_test_logll(args, replay_buffer, agent)
+  test_logll_smoothly(args, replay_buffer, agent)
+  posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)
   # density_trajectory(args, replay_buffer, agent)
   # optimize_next_state(args, replay_buffer, agent)
@@ -1796,7 +1860,7 @@ if __name__ == "__main__":
   # check_action_space(args, replay_buffer, agent)
   # rollout(args, replay_buffer, agent, 2)
   # rollout_check_profile(args, replay_buffer, agent, 2)
-  rollout_check_profile_all(args, replay_buffer, agent)
+  # rollout_check_profile_all(args, replay_buffer, agent)
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

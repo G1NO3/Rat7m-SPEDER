@@ -386,7 +386,7 @@ class SPEDERSACAgent():
         # u1, u2 = self.critic(expert_task_onehot)
         # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
         # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
         # assert q1.shape == q_target.shape
         # assert q2.shape == q_target.shape
         # loss_q1 = torch.nn.MSELoss()(q_target, q1)
@@ -467,7 +467,7 @@ class SPEDERSACAgent():
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
-        action_prime = self.HMC_sampling(expert_state, expert_action, expert_task, n=20, step_size=1e-3)
+        action_prime = self.MALA_sampling(expert_state, expert_action, expert_task, n=5, step_size=1e-1)
         z_u = self.u(expert_task_onehot)
         z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
         f_phi = self.critic(z_phi)
@@ -492,7 +492,7 @@ class SPEDERSACAgent():
         z_phi = self.phi(torch.concat([state, action], -1))
         f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
-        q_data = -torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
+        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
         return -q_data
 
     def MALA_step(self, state, action, task, step_size=1e-4):
@@ -557,8 +557,9 @@ class SPEDERSACAgent():
             r = r - step_size * du(action) / 2
             action = action + step_size * r
             r = r - step_size * du(action) / 2
-        if torch.rand(1).to(self.device) > torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)):
-            action = initial_action
+        # if torch.rand(1).to(self.device) > torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)):
+        #     action = initial_action
+        action = torch.where(torch.rand(state.shape[0], 1).to(self.device) < torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)), action, initial_action)
         return action
     def HMC_sampling(self, state, initial_action, task, n=100, step_size=1e-4, temperature=1.0):
         action = initial_action
@@ -750,16 +751,17 @@ class SPEDERSACAgent():
             # print(dist.scale)
             # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         # action_onehot = torch.eye(self.n_action)[action.long()]
-        # action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], -1).to(self.device)    
-        z_phi = self.phi(torch.concat([state, action], -1))
-        f_phi = self.critic(z_phi)
+        # action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], -1).to(self.device)  
+        q = -self.potential(state, action, task_onehot).squeeze(-1)
+        # z_phi = self.phi(torch.concat([state, action], -1))
+        # f_phi = self.critic(z_phi)
             # q = self.critic(torch.cat([z_phi, task_onehot], -1)).squeeze(-1)
         # q = torch.sum(z_phi * self.u(task_onehot)*self.beta, dim=-1, keepdim=False)
         # q = torch.sum(z_phi * self.u(task_onehot), dim=-1, keepdim=False)
         # f_phi = self.critic(z_phi)
-        z_u = self.u(task_onehot)
+        # z_u = self.u(task_onehot)
         # z_w = self.w(task_onehot)
-        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        # q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
 
 
             # u1, u2 = self.critic(task_onehot)

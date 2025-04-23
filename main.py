@@ -163,7 +163,9 @@ if __name__ == "__main__":
     kwargs['alpha'] = 1
     kwargs['device'] = 'cuda:0'
     agent = spedersac_agent.ValueDICEAgent(**kwargs)
-  
+  args_kwargs = {'args': vars(args), 'kwargs': kwargs}
+  np.save(os.path.join(save_path, 'args_kwargs.npy'), args_kwargs)
+  print(f'Args saved to {os.path.join(save_path, "args_kwargs.npy")}')
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
   # agent.load_state_dict(torch.load(f'./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth'))
   # print(f'Agent loaded from ./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth')

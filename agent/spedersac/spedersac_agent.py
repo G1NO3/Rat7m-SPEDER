@@ -492,7 +492,7 @@ class SPEDERSACAgent():
         z_phi = self.phi(torch.concat([state, action], -1))
         f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
-        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
+        q_data = -torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
         return -q_data
 
     def MALA_step(self, state, action, task, step_size=1e-4):

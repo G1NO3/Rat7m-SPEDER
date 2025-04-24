@@ -17,7 +17,6 @@ from agent.sac.actor import DiagGaussianActor, MultiSoftmaxActor
 from torchinfo import summary
 import numpy as np
 from functools import partial
-import hamiltorch
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -441,22 +440,29 @@ class SPEDERSACAgent():
         batch_size = expert_state.shape[0]
         batch_state = expert_state.reshape(batch_size, 1, self.state_dim)
         batch_action = expert_action.reshape(1, batch_size, self.action_dim)
-        batch_state_action = torch.concat([batch_state.expand(-1, batch_size, -1), batch_action.expand(batch_size, -1, -1)], dim=-1)
+        batch_state_action = torch.concat([batch_state.repeat(1, batch_size, 1), batch_action.repeat(batch_size, 1, 1)], dim=-1)
         batch_z_phi = self.phi(batch_state_action).detach()
         batch_f_phi = self.critic(batch_z_phi)
-        batch_task_onehot = expert_task_onehot.reshape(batch_size, 1, self.n_task).expand(-1, batch_size, -1)
+        batch_task_onehot = expert_task_onehot.reshape(batch_size, 1, self.n_task).repeat(1, batch_size, 1)
         batch_u = self.u(batch_task_onehot)
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
         assert q_data.shape == (batch_size, batch_size)
-        perturbed_action = batch_action + torch.randn_like(batch_action)
-        perturbed_state_action = torch.concat([batch_state.expand(-1, batch_size, -1), perturbed_action.expand(batch_size, -1, -1)], dim=-1)
+        n_LD = 128
+        batch_state_repeat = batch_state.repeat(1, n_LD, 1)
+        batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
+        batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
+        perturbed_action = self.MALA_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=10, step_size=1e-1)
+        perturbed_state_action = torch.concat([batch_state_repeat, perturbed_action], dim=-1)
         perturbed_z_phi = self.phi(perturbed_state_action).detach()
         perturbed_f_phi = self.critic(perturbed_z_phi)
-        q_perturbed = torch.sum(perturbed_f_phi * batch_u, dim=-1, keepdim=False)
-        assert q_perturbed.shape == (batch_size, batch_size)
+        perturbed_task_onehot = torch.eye(self.n_task)[batch_task_repeat.long().squeeze(-1)].to(self.device)
+        perturbed_u = self.u(perturbed_task_onehot)
+        assert perturbed_f_phi.shape == perturbed_u.shape
+        q_perturbed = torch.sum(perturbed_f_phi * perturbed_u, dim=-1, keepdim=False)
+        assert q_perturbed.shape == (batch_size, n_LD)
         q_all = torch.concat([q_data, q_perturbed], dim=1)
 
-        label = torch.eye(batch_size, batch_size*2).to(self.device)
+        label = torch.eye(batch_size, batch_size+n_LD).to(self.device)
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_all, label)
         loss = loss_ctrl
         self.critic_optimizer.zero_grad()
@@ -476,10 +482,12 @@ class SPEDERSACAgent():
         expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
         assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
-        action_prime = self.MALA_sampling(expert_state, expert_action, expert_task, n=5, step_size=1e-1)
+        action_prime = self.MALA_sampling(expert_state, expert_action, expert_task, n=10, step_size=1e-1, temperature=1)
         z_u = self.u(expert_task_onehot)
         z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
         f_phi = self.critic(z_phi)
+        assert f_phi.shape == z_u.shape
+        assert z_u.shape == (expert_state.shape[0], self.feature_dim)
         q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
         z_phi_prime = self.phi(torch.concat([expert_state, action_prime], -1)).detach()
         f_phi_prime = self.critic(z_phi_prime)
@@ -507,7 +515,7 @@ class SPEDERSACAgent():
     def Yilun_potential(self, state, action, task_onehot, temperature=1.0):
         return -self.continuous_potential(state, action, task_onehot, temperature=temperature)
 
-    def MALA_step(self, state, action, task, step_size=1e-4):
+    def MALA_step(self, state, action, task, step_size):
         # print('expert_task', expert_task)
         assert state.shape[-1] == self.state_dim
         assert action.shape[-1] == self.action_dim
@@ -542,7 +550,7 @@ class SPEDERSACAgent():
         # assert action_prime.shape == action.shape
         # action_prime = torch.where(accept, action_prime, action).detach()
         return action_prime
-    def MALA_sampling(self, state, initial_action, task, n=1000, step_size=1e-4):
+    def MALA_sampling(self, state, initial_action, task, n, step_size, temperature):
         # action = torch.zeros_like(initial_action).to(self.device)
         action = initial_action
         for i in range(n):
@@ -550,7 +558,7 @@ class SPEDERSACAgent():
             # print('action:', action)
             action = self.MALA_step(state, action.detach(), task, step_size)
         return action
-    def HMC_step(self, state, initial_action, task, L=5, step_size=1e-4, temperature=1.0):
+    def HMC_step(self, state, initial_action, task, step_size, temperature, L=5):
         task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         assert task_onehot.shape == (state.shape[0], self.n_task)
         potential = partial(self.potential, state=state, task_onehot=task_onehot, temperature=temperature)
@@ -573,7 +581,7 @@ class SPEDERSACAgent():
         #     action = initial_action
         action = torch.where(torch.rand(state.shape[0], 1).to(self.device) < torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)), action, initial_action)
         return action
-    def HMC_sampling(self, state, initial_action, task, n=100, step_size=1e-4, temperature=1.0):
+    def HMC_sampling(self, state, initial_action, task, n, step_size, temperature):
         action = initial_action
         for i in range(n):
             action = self.HMC_step(state, action.detach(), task, step_size=step_size, temperature=temperature)
@@ -810,7 +818,7 @@ class SPEDERSACAgent():
         next_state = state + action_continous
         return next_state
 
-    def step(self, state, action, task, temperature=1.0, n=1000, step_size=1e-4):
+    def step(self, state, action, task, temperature, n, step_size):
         # next_state = self.generate_next_state(state, action)
         next_state = state + action
         # next_state = self.generate_next_state_discrete_action(state, action)
@@ -822,10 +830,11 @@ class SPEDERSACAgent():
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
-        next_z_phi = self.phi(torch.concat([next_state, next_action], -1))
-        f_phi = self.critic(next_z_phi)
-        z_u = self.u(task_onehot)
-        q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        # next_z_phi = self.phi(torch.concat([next_state, next_action], -1))
+        # f_phi = self.critic(next_z_phi)
+        # z_u = self.u(task_onehot)
+        # q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
+        q = -self.potential(next_state, next_action, task_onehot).squeeze(-1)
         return next_state, next_action, sp_likelihood, q
             
 

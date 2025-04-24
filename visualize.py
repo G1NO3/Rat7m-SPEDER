@@ -105,7 +105,7 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
   ap_q_ar = np.zeros((agent.n_task, ))
   stateseq_ar = np.zeros((agent.n_task, timestep, agent.state_dim))
   np.random.seed(4)
-  for i in [2,4]:
+  for i in range(agent.n_task):
     peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q, stateseq = \
       rollout_check_profile(args, dataset, agent, i, timestep, temperature=1, n=1000, step_size=1e-4)
     peak_score_ar[i] = peak_score
@@ -120,12 +120,13 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
     for i in range(agent.n_task):
       f.write(f'{i}, {peak_score_ar[i]}, {higher_than_mean_ar[i]}, {higher_than_80quantile_ar[i]}, {action_to_linear_score_ar[i]}, {ap_q_ar[i]}\n')
 
-def rollout_check_profile(args, dataset, agent, syllable, timestep=10, temperature=1, n=1000, step_size=1e-3):
+def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature, n, step_size):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
   # sample_idx = int(np.where(dataset.task == syllable)[0][0])
   all_idx = np.where(dataset.task == syllable)[0]
   sample_idx = int(all_idx[np.random.randint(0, len(all_idx))])
+  sample_idx = 90
   print('sample_idx:', sample_idx, type(sample_idx))
   # sample_idx = 354
   # sample_idx = 161
@@ -174,9 +175,9 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep=10, temperatu
     # state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
-    # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, 6-syllable, temperature=1, 
-                                                              n=1000, step_size=1e-3)
+    # state = state + (action_pred_continuous-2)/100##TODO: 
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action_pred, syllable, temperature=temperature, 
+                                                              n=n, step_size=step_size)
     ap_q_ar[i] = ap_q
     state = next_state
     action = next_action
@@ -235,10 +236,22 @@ def plot_gif_all_syllables(state_seqs_all, save_path):
   cmap = plt.cm.get_cmap('viridis')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   rasters = []
+  state_seqs_to_plot -= state_seqs_to_plot.mean(axis=(1,2), keepdims=True)
+  axmin = -0.2
+  axmax = 0.2
+  aymin = -0.2
+  aymax = 0.2
+
   ymin = np.min(state_seqs_to_plot[...,1], axis=(-1,-2))
   ymax = np.max(state_seqs_to_plot[...,1], axis=(-1,-2))
   xmin = np.min(state_seqs_to_plot[...,0], axis=(-1,-2))
   xmax = np.max(state_seqs_to_plot[...,0], axis=(-1,-2))
+  print('ymin:', ymin.shape, 'ymax:', ymax.shape)
+  indicator = np.where((aymin > ymin) | (aymax < ymax) | (axmin > xmin) | (axmax < xmax), 1, 0)
+  aymin = np.where(indicator, -0.3, aymin)
+  aymax = np.where(indicator, 0.3, aymax)
+  axmin = np.where(indicator, -0.3, axmin)
+  axmax = np.where(indicator, 0.3, axmax)
   for i in range(n_img):
     for j in range(n_syllable):
       axis[j//4, j%4].clear()
@@ -253,8 +266,8 @@ def plot_gif_all_syllables(state_seqs_all, save_path):
           s=100)
       axis[j//4, j%4].set_title(f'syllable {j}', fontsize=30)
       axis[j//4, j%4].axis('off')
-      axis[j//4, j%4].set_xlim(xmin[j], xmax[j])
-      axis[j//4, j%4].set_ylim(ymin[j], ymax[j])
+      axis[j//4, j%4].set_xlim(axmin[j], axmax[j])
+      axis[j//4, j%4].set_ylim(aymin[j], aymax[j])
     rasters.append(rasterize_figure(fig))
   pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
   # Save the PIL Images as an animated GIF
@@ -597,6 +610,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
   action_name = state_name
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if os.path.exists(f'{save_path}/ig_matrix.npy'):
+    print(f'load ig_matrix from {save_path}/ig_matrix.npy') 
     ig_matrix = np.load(f'{save_path}/ig_matrix.npy')
     ig_std_matrix = np.load(f'{save_path}/ig_std_matrix.npy')
     ig_matrix_agg_xyz = np.load(f'{save_path}/ig_matrix_agg.npy')
@@ -627,7 +641,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
     for j in range(agent.feature_dim):
       attr_ig, delta = ig.attribute(sa_ar, target=j, return_convergence_delta=True, 
                       baselines=-1)
-      ig_matrix_all[i][j] = attr_ig.mean(dim=0).detach().cpu()
+      ig_matrix_all[i][j] = attr_ig.mean(dim=0).detach().cpu()# average over batch
       ig_std_matrix_all[i][j] = attr_ig.std(dim=0).detach().cpu()
     # use local gradients
     # phi_sa = agent.phi(sa_ar)
@@ -1683,8 +1697,8 @@ def show_uw(args, dataset, agent):
   params = dict(agent.u.named_parameters())
   weight = params['trunk.0.weight'].detach().cpu().numpy()
   print('weight:', weight.shape)
-  bias = params['trunk.0.bias'].detach().cpu().numpy()  
-  print('bias:', bias.shape)
+  # bias = params['trunk.0.bias'].detach().cpu().numpy()  
+  # print('bias:', bias.shape)
   # u = u1.detach().cpu().numpy()
   u = u_all.detach().cpu().numpy()
   w = w_all.detach().cpu().numpy()
@@ -1694,13 +1708,18 @@ def show_uw(args, dataset, agent):
     os.makedirs(save_dir_path)
   fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
-  for i in [2,4]:
-    predicted_ui = weight[:,i] + bias
-    axes[0].plot(predicted_ui, label=i)
+  for i in [2,3]:
+    # predicted_ui = weight[:,i] + bias
+    # axes[0].plot(predicted_ui, label=i)
+    axes[0].plot(u[i], label=i)
+    large_idx = np.argsort(np.abs(u[i]))[::-1]
+    print('large idx:', large_idx[:5])
+    print('large value:', u[i][large_idx[:5]])
+    print(i, 'u:', u[i, 74])
     axes[1].plot(weight[:,i], label=i)
     # axes[1].plot(w[i], label=i)
-    print('u:', u[i], 'w:', w[i])
-  axes[2].plot(bias, label='bias')
+    # print('u:', u[i], 'w:', w[i])
+  # axes[2].plot(bias, label='bias')
   axes[0].set_title('u')
   # axes[1].set_title('w')
   axes[0].legend()
@@ -1845,17 +1864,20 @@ if __name__ == "__main__":
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
   # show_uw(args, replay_buffer, agent)
-  # show_phi_weight(args, replay_buffer, agent)
-  # show_last_weight(args, replay_buffer, agent)
+  rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
-  # action_profile_likelihood_discrete(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
-  # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   # action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # draw_IG_skeleton(args, replay_buffer, agent)
+
+  # show_phi_weight(args, replay_buffer, agent)
+  # show_last_weight(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)
   # density_trajectory(args, replay_buffer, agent)
   # optimize_next_state(args, replay_buffer, agent)
@@ -1865,7 +1887,6 @@ if __name__ == "__main__":
   # args.times = 3
   # IntegratedGradients_attr(args, replay_buffer, agent)
   # get_edges()
-  # draw_IG_skeleton(args, replay_buffer, agent)
   # PCA_IG_skeleton(args, replay_buffer, agent)
   # visualize_wu(args, replay_buffer, agent)
   # action_loglikelihood(args, replay_buffer, agent)
@@ -1873,7 +1894,7 @@ if __name__ == "__main__":
   # check_action_space(args, replay_buffer, agent)
   # rollout(args, replay_buffer, agent, 2)
   # rollout_check_profile(args, replay_buffer, agent, 2)
-  rollout_check_profile_all(args, replay_buffer, agent)
+
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

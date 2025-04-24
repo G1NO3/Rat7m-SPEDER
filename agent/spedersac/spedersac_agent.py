@@ -451,7 +451,7 @@ class SPEDERSACAgent():
         batch_state_repeat = batch_state.repeat(1, n_LD, 1)
         batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
         batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
-        perturbed_action = self.MALA_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=10, step_size=1e-1)
+        perturbed_action = self.MALA_sampling(batch_state_repeat, batch_action_repeat, batch_task_repeat, n=10, step_size=1e-1, temperature=1)
         perturbed_state_action = torch.concat([batch_state_repeat, perturbed_action], dim=-1)
         perturbed_z_phi = self.phi(perturbed_state_action).detach()
         perturbed_f_phi = self.critic(perturbed_z_phi)
@@ -523,7 +523,7 @@ class SPEDERSACAgent():
         # assert expert_done.shape[-1] == 1
         task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
         # print('task_onehot', task_onehot.shape)
-        assert task_onehot.shape == (state.shape[0], self.n_task)
+        assert task_onehot.shape == (*state.shape[:-1], self.n_task)
         potential = partial(self.potential, state=state, task_onehot=task_onehot)
         def log_transition_prob(x, x_prime, step):
             x.requires_grad = True

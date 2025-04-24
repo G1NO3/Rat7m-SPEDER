@@ -579,7 +579,8 @@ class SPEDERSACAgent():
             r = r - step_size * du(action) / 2
         # if torch.rand(1).to(self.device) > torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)):
         #     action = initial_action
-        action = torch.where(torch.rand(state.shape[0], 1).to(self.device) < torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0)), action, initial_action)
+        indicator = torch.rand(*action.shape[:-1], 1).to(self.device) < torch.exp(-Hamiltonian(action, r) + Hamiltonian(initial_action, r0))
+        action = torch.where(indicator, action, initial_action).detach()
         return action
     def HMC_sampling(self, state, initial_action, task, n, step_size, temperature):
         action = initial_action

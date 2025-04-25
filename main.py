@@ -81,6 +81,7 @@ if __name__ == "__main__":
   parser.add_argument("--feature_lr", default=5e-4, type=float)
   parser.add_argument("--policy_lr", default=3e-4, type=float)
   parser.add_argument("--start_timesteps", default=1e3, type=int)
+  parser.add_argument("--actor_type", default='gaussian', type=str)      # Actor type
   args = parser.parse_args()
 
   if args.alg == 'mulvdrq':
@@ -125,6 +126,7 @@ if __name__ == "__main__":
     # "tau": args.tau,
     # "hidden_dim": args.hidden_dim,
     "directory": args.dir,
+    'actor_type': args.actor_type,
   }
 
   # Initialize policy

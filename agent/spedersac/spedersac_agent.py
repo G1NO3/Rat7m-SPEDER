@@ -53,7 +53,8 @@ class SPEDERSACAgent():
             lasso_coef=1e-3,
             n_task=3,
             learnable_temperature=False,
-            directory=None
+            directory=None,
+            actor_type='gaussian'
     ):
 
         # super().__init__(
@@ -133,13 +134,23 @@ class SPEDERSACAgent():
         self.feature_optimizer = torch.optim.Adam(
             list(self.phi.parameters()) + list(self.mu.parameters()),
             weight_decay=0, lr=phi_and_mu_lr)
-        self.actor = DiagGaussianActor(
-            obs_dim=state_dim+n_task,
-            action_dim=action_dim,
-            hidden_dim=critic_and_actor_hidden_dim,
-            hidden_depth=2,
-            log_std_bounds=[-8., 2.],
-        ).to(device)
+        if actor_type == 'gaussian':
+            print('Using Gaussian actor')
+            self.actor = DiagGaussianActor(
+                obs_dim=state_dim+n_task,
+                action_dim=action_dim,
+                hidden_dim=critic_and_actor_hidden_dim,
+                hidden_depth=2,
+                log_std_bounds=[-8., 2.],
+            ).to(device)
+            self.update_actor_and_alpha = self.update_actor_and_alpha_generative
+        elif actor_type == 'mlp':
+            print('Using MLP actor')
+            self.actor = MLP(input_dim=state_dim+n_task,
+                            output_dim=action_dim,
+                            hidden_dim=critic_and_actor_hidden_dim,
+                            hidden_depth=2).to(device)
+            self.update_actor_and_alpha = self.update_actor_and_alpha_deterministic
         # self.actor = MultiSoftmaxActor(
         #     obs_dim=state_dim+n_task,
         #     action_dim=self.action_dim,
@@ -447,7 +458,7 @@ class SPEDERSACAgent():
         batch_u = self.u(batch_task_onehot)
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
         assert q_data.shape == (batch_size, batch_size)
-        n_LD = 128
+        n_LD = 16
         batch_state_repeat = batch_state.repeat(1, n_LD, 1)
         batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
         batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
@@ -642,8 +653,26 @@ class SPEDERSACAgent():
             'loss_q': loss_q.item(),
             'loss_q_bellman': loss_q_bellman.item(),
         }
-
-    def update_actor_and_alpha(self, batch):
+    def update_actor_and_alpha_deterministic(self, batch):
+        """
+        Actor update step
+        """
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        assert expert_state.shape[-1] == self.state_dim
+        # assert expert_action.shape[-1] == self.action_dim//self.n_action    
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().reshape(-1)].to(self.device)
+        # expert_next_task_onehot = torch.eye(self.n_task)[expert_next_task.long().reshape(-1)].to(self.device)
+        expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
+        action_pred = self.actor(expert_state_task)
+        loss = torch.nn.MSELoss()(action_pred, expert_action)
+        self.actor_optimizer.zero_grad()
+        loss.backward()
+        self.actor_optimizer.step()
+        info = {'actor_loss': loss.item()}
+        return info
+    def update_actor_and_alpha_generative(self, batch):
         """
         Actor update step
         """
@@ -679,7 +708,6 @@ class SPEDERSACAgent():
             info['alpha'] = self.alpha
 
         return info
-
 
     def state_dict(self):
         module_list = {'actor': self.actor.state_dict(),
@@ -727,18 +755,18 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
+        # critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        # actor_info = self.update_actor_and_alpha(batch_1)
+        actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
         self.update_target()
 
         return {
             **feature_info,
-            **critic_info,
-            # **actor_info,
+            # **critic_info,
+            **actor_info,
         }
     
     def state_likelihood(self, state, action, next_state, kde=False):

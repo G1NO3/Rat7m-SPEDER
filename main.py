@@ -21,6 +21,8 @@ def load_keymoseq(category, directory, device='cuda:0'):
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
   if '24' in directory:
     replay_buffer_path = f'./kms/{category}_data_24.pth'
+  elif '2_only' in directory:
+    replay_buffer_path = f'./kms/{category}_data_2_only.pth'
   else:
     replay_buffer_path = f'./kms/{category}_data_continuous_a200.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))

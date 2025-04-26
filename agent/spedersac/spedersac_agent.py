@@ -149,7 +149,8 @@ class SPEDERSACAgent():
             self.actor = MLP(input_dim=state_dim+n_task,
                             output_dim=action_dim,
                             hidden_dim=critic_and_actor_hidden_dim,
-                            hidden_depth=2).to(device)
+                            hidden_depth=2,
+                            bias=True).to(device)
             self.update_actor_and_alpha = self.update_actor_and_alpha_deterministic
         # self.actor = MultiSoftmaxActor(
         #     obs_dim=state_dim+n_task,
@@ -177,21 +178,24 @@ class SPEDERSACAgent():
             self.u = MLP(input_dim=n_task,
                 output_dim=feature_dim,
                 hidden_dim=critic_and_actor_hidden_dim,
-                hidden_depth=0).to(device)
+                hidden_depth=0,
+                bias=False).to(device)
             self.critic = MLP(input_dim=feature_dim,
                             output_dim=feature_dim,
                             hidden_dim=critic_and_actor_hidden_dim,
-                            hidden_depth=1).to(device)
+                            hidden_depth=1,
+                            bias=True).to(device)
             self.potential = self.Yilun_potential
             self.critic_step = self.critic_step_CD
         else:
             print('Using Norm1MLP potential')
-            self.u = Norm1MLP(input_dim=self.n_task,
+            self.u = Norm1MLP_singlelayer(input_dim=self.n_task,
                                 output_dim=feature_dim,
-                                hidden_dim=critic_and_actor_hidden_dim).to(device)
+                                bias=False).to(device)
             self.critic = Norm1MLP(input_dim=feature_dim,
                                 output_dim=feature_dim,
-                                hidden_dim=critic_and_actor_hidden_dim).to(device)
+                                hidden_dim=critic_and_actor_hidden_dim,
+                                bias=True).to(device)
             self.potential = self.continuous_potential
             self.critic_step = self.critic_step_continuous
         self.critic_target = copy.deepcopy(self.critic)
@@ -458,7 +462,7 @@ class SPEDERSACAgent():
         batch_u = self.u(batch_task_onehot)
         q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
         assert q_data.shape == (batch_size, batch_size)
-        n_LD = 16
+        n_LD = 64
         batch_state_repeat = batch_state.repeat(1, n_LD, 1)
         batch_action_repeat = expert_action.reshape(batch_size, 1, self.action_dim).repeat(1, n_LD, 1)
         batch_task_repeat = expert_task.reshape(batch_size, 1, 1).repeat(1, n_LD, 1)
@@ -594,7 +598,8 @@ class SPEDERSACAgent():
         action = torch.where(indicator, action, initial_action).detach()
         return action
     def HMC_sampling(self, state, initial_action, task, n, step_size, temperature):
-        action = initial_action
+        # action = initial_action
+        action = torch.zeros_like(initial_action).to(self.device)
         for i in range(n):
             action = self.HMC_step(state, action.detach(), task, step_size=step_size, temperature=temperature)
         return action
@@ -613,7 +618,19 @@ class SPEDERSACAgent():
                                     num_steps_per_sample=num_steps_per_sample, inv_mass=inv_mass)
         sample = torch.stack(params_hmc)[-1]
         return sample.unsqueeze(0)
-
+    def MLE_optimize(self, state, initial_action, task, n, step_size, temperature):
+        initial_action = torch.zeros_like(initial_action).to(self.device)/100
+        task_onehot = torch.eye(self.n_task)[task.long().squeeze(-1)].to(self.device)
+        assert task_onehot.shape == (state.shape[0], self.n_task)
+        potential = partial(self.potential, state=state, task_onehot=task_onehot, temperature=temperature)
+        action = initial_action.clone().detach().requires_grad_()
+        optimizer = torch.optim.Adam([action], lr=step_size)
+        for i in range(n):
+            optimizer.zero_grad()
+            loss = potential(action=action).mean()
+            loss.backward()
+            optimizer.step()
+        return action.detach()
     def critic_step_QR(self, batch, s_random, a_random, s_prime_random, task_random):
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)
@@ -755,7 +772,8 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
-        # critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
+        critic_info, actor_info = None, None
+        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
         actor_info = self.update_actor_and_alpha(batch_1)
@@ -763,11 +781,12 @@ class SPEDERSACAgent():
         # Update the frozen target models
         self.update_target()
 
-        return {
-            **feature_info,
-            # **critic_info,
-            **actor_info,
-        }
+        all_info = {**feature_info}
+        if critic_info is not None:
+            all_info = {**all_info, **critic_info}
+        if actor_info is not None:
+            all_info = {**all_info, **actor_info}
+        return all_info
     
     def state_likelihood(self, state, action, next_state, kde=False):
         # output the device
@@ -824,6 +843,7 @@ class SPEDERSACAgent():
         dist = self.actor(state_task)
         actor_log_prob = dist.log_prob(action).sum(-1, keepdim=False)
         assert actor_log_prob.shape == q.shape
+        # actor_log_prob = q
 
         return actor_log_prob, q
     
@@ -855,7 +875,10 @@ class SPEDERSACAgent():
         # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
-        next_action = self.HMC_sampling(next_state, action, task, n, step_size, temperature)
+        # Use MLE to optimize the next action
+        next_action = self.MLE_optimize(next_state, action, task, n, step_size, temperature)
+        # Actor
+        # next_action = self.actor(torch.concat([next_state, task_onehot], -1))
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)

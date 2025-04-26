@@ -105,9 +105,13 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
   ap_q_ar = np.zeros((agent.n_task, ))
   stateseq_ar = np.zeros((agent.n_task, timestep, agent.state_dim))
   np.random.seed(4)
-  for i in range(agent.n_task):
+  if '24' in args.dir:
+    range_i = [2,4]
+  else:
+    range_i = range(agent.n_task)
+  for i in range_i:
     peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q, stateseq = \
-      rollout_check_profile(args, dataset, agent, i, timestep, temperature=1, n=1000, step_size=1e-4)
+      rollout_check_profile(args, dataset, agent, i, timestep=timestep, temperature=1, n=1000, step_size=1e-4)
     peak_score_ar[i] = peak_score
     higher_than_mean_ar[i] = higher_than_mean
     higher_than_80quantile_ar[i] = higher_than_80quantile
@@ -167,7 +171,8 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
     batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
     # print('batch_q:', batch_q.shape)
     assert batch_q.shape == (agent.action_dim, bins)
-    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action, state, action, action_pred, i, args.scale_factor)
+    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action.detach().numpy(), 
+                                                                                                state, action.detach().numpy(), action_pred, i, args.scale_factor)
     peak_score_ar[i] = peak_score
     higher_than_mean_ar[i] = higher_than_mean
     higher_than_80quantile_ar[i] = higher_than_80quantile
@@ -176,7 +181,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
     # state = state + (action_pred_continuous-2)/100##TODO: 
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action_pred, syllable, temperature=temperature, 
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=temperature, 
                                                               n=n, step_size=step_size)
     ap_q_ar[i] = ap_q
     state = next_state
@@ -186,7 +191,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
   # save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   # plot_gif(stateseq.squeeze(1), save_path)
   return peak_score_ar.mean(), higher_than_mean_ar.mean(), higher_than_80quantile_ar.mean(), action_to_linear_score_ar.mean(), \
-          ap_q_ar.mean(), stateseq
+          ap_q_ar.mean(), stateseq.detach().cpu().numpy()
 
 def draw_profile(agent, q, batch_action, state, action, action_pred, timestep, scale_factor):
   fig, axes = plt.subplots(4,4, figsize=(10,10))
@@ -1695,7 +1700,12 @@ def show_uw(args, dataset, agent):
   for name, param in agent.u.named_parameters():
     print(name, param)
   params = dict(agent.u.named_parameters())
-  weight = params['trunk.0.weight'].detach().cpu().numpy()
+  if 'ctrl' in args.dir:
+    weight = params['l2.weight'].detach().cpu().numpy()
+    # bias = params['l2.bias'].detach().cpu().numpy()
+  elif 'Yilun' in args.dir:
+    weight = params['trunk.0.weight'].detach().cpu().numpy()
+    # bias = params['trunk.0.bias'].detach().cpu().numpy()
   print('weight:', weight.shape)
   # bias = params['trunk.0.bias'].detach().cpu().numpy()  
   # print('bias:', bias.shape)
@@ -1708,7 +1718,7 @@ def show_uw(args, dataset, agent):
     os.makedirs(save_dir_path)
   fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
-  for i in [2,3]:
+  for i in range(agent.n_task):
     # predicted_ui = weight[:,i] + bias
     # axes[0].plot(predicted_ui, label=i)
     axes[0].plot(u[i], label=i)
@@ -1819,6 +1829,7 @@ if __name__ == "__main__":
   parser.add_argument("--times", default=3, type=int)
   parser.add_argument("--device", default='cuda:0', type=str)
   parser.add_argument("--scale_factor", default=1, type=float)
+  parser.add_argument("--actor_type", default='gaussian', type=str)
   args = parser.parse_args()
 
 
@@ -1835,6 +1846,7 @@ if __name__ == "__main__":
     "discount": args.discount,
     # "tau": args.tau,
     # "hidden_dim": args.hidden_dim,
+    "actor_type": args.actor_type,
   }
 
   kwargs['extra_feature_steps'] = 2
@@ -1863,7 +1875,7 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  # show_uw(args, replay_buffer, agent)
+  show_uw(args, replay_buffer, agent)
   rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)

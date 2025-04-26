@@ -72,10 +72,11 @@ class MLP(nn.Module):
 								hidden_dim,
 								output_dim,
 								hidden_depth=1,
-								output_mod=None):
+								output_mod=None,
+								bias=True):
 		super().__init__()
 		self.trunk = mlp(input_dim, hidden_dim, output_dim, hidden_depth,
-											output_mod)
+											output_mod, bias)
 		self.apply(weight_init)
 
 	def forward(self, x):
@@ -110,14 +111,14 @@ def mlp_nobatchnorm(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=
 	trunk = nn.Sequential(*mods)
 	return trunk
 
-def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None):
+def mlp(input_dim, hidden_dim, output_dim, hidden_depth, output_mod=None, bias=True):
 	if hidden_depth == 0:
-		mods = [nn.Linear(input_dim, output_dim)]
+		mods = [nn.Linear(input_dim, output_dim, bias=bias)]
 	else:
-		mods = [nn.Linear(input_dim, hidden_dim), nn.ELU(inplace=True)]
+		mods = [nn.Linear(input_dim, hidden_dim, bias=bias), nn.ELU(inplace=True)]
 		for i in range(hidden_depth - 1):
-			mods += [nn.Linear(hidden_dim, hidden_dim), nn.ELU(inplace=True)]
-		mods.append(nn.Linear(hidden_dim, output_dim))
+			mods += [nn.Linear(hidden_dim, hidden_dim, bias=bias), nn.ELU(inplace=True)]
+		mods.append(nn.Linear(hidden_dim, output_dim, bias=bias))
 	if output_mod is not None:
 		mods.append(output_mod)
 	trunk = nn.Sequential(*mods)
@@ -151,10 +152,10 @@ class SigmoidMLP(nn.Module):
 		return x
 
 class Norm1MLP(nn.Module):
-	def __init__(self, input_dim, hidden_dim, output_dim):
+	def __init__(self, input_dim, hidden_dim, output_dim, bias=True):
 		super().__init__()
-		self.l1 = nn.Linear(input_dim, hidden_dim)
-		self.l2 = nn.Linear(hidden_dim, output_dim)
+		self.l1 = nn.Linear(input_dim, hidden_dim, bias=bias)
+		self.l2 = nn.Linear(hidden_dim, output_dim, bias=bias)
 	def forward(self, x):
 		x = F.elu(self.l1(x))
 		x = F.elu(self.l2(x))
@@ -162,9 +163,9 @@ class Norm1MLP(nn.Module):
 		return x
 
 class Norm1MLP_singlelayer(nn.Module):
-	def __init__(self, input_dim, output_dim):
+	def __init__(self, input_dim, output_dim, bias=True):
 		super().__init__()
-		self.l1 = nn.Linear(input_dim, output_dim)
+		self.l1 = nn.Linear(input_dim, output_dim, bias=bias)
 	def forward(self, x):
 		x = F.elu(self.l1(x))
 		x = x / torch.linalg.norm(x, ord=2, dim=-1, keepdim=True)

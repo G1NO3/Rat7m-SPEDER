@@ -9,7 +9,7 @@ import math
 from torch import nn
 import torch.nn.functional as F
 from torch import distributions as pyd
-
+from torch.distributions import Normal
 from utils import util
 
 
@@ -116,3 +116,99 @@ class MultiSoftmaxActor(nn.Module):
       dist = self.forward(obs)
       action = dist.sample()
       return action
+
+class AutoregressiveGaussianActor(nn.Module):
+    def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth, log_std_bounds):
+        super().__init__()
+        self.action_dim = action_dim
+        self.log_std_bounds = log_std_bounds  # tuple (log_std_min, log_std_max)
+        
+        # shared observation embed
+        self.obs_embed = util.mlp(obs_dim, hidden_dim, hidden_dim, hidden_depth)
+        # one small net per action-dim
+        self.param_nets = nn.ModuleList([
+            util.mlp(hidden_dim + i, hidden_dim, 2, hidden_depth)
+            for i in range(action_dim)
+        ])
+        
+        self.outputs = {}
+        self.apply(util.weight_init)
+
+    def forward(self, obs):
+        """
+        Sample actions and return their log-prob under the policy.
+        Returns:
+          actions:  [B x action_dim]
+          log_prob: [B]
+        """
+        return self._sample_and_logprob(obs, rsample=True)
+
+    def select_action(self, obs):
+        with torch.no_grad():
+            actions, _ = self._sample_and_logprob(obs, rsample=True)
+            return actions
+
+    def log_prob(self, obs, actions):
+        """
+        Compute the log-prob of given actions under the policy:
+          obs:     [B x obs_dim]
+          actions: [B x action_dim]
+        Returns:
+          log_prob: [B]
+        """
+        # reuse the same routine but without sampling
+        _, log_prob = self._sample_and_logprob(obs, rsample=False, given_actions=actions)
+        return log_prob
+
+    def _sample_and_logprob(self, obs, rsample=True, given_actions=None):
+        """
+        Internal helper. If rsample=True, draws actions by .rsample().
+        If given_actions is provided, uses those instead of sampling.
+        Returns (actions, log_prob).
+        """
+        B = obs.shape[0]
+        h = self.obs_embed(obs)  # [B x hidden_dim]
+        
+        actions   = []
+        log_probs = []
+        mus       = []
+        stds      = []
+
+        for i, net in enumerate(self.param_nets):
+            # prepare input
+            if i == 0:
+                inp = h
+            else:
+                prev = torch.cat(actions, dim=-1)            # [B x i]
+                inp  = torch.cat([h, prev], dim=-1)          # [B x (hidden_dim + i)]
+            
+            # get μ_i and raw log-σ_i
+            mu_i, log_std_i = net(inp).chunk(2, dim=-1)      # each [B x 1]
+            log_std_i = torch.tanh(log_std_i)
+            lo, hi = self.log_std_bounds
+            log_std_i = lo + 0.5 * (hi - lo) * (log_std_i + 1)
+            std_i = log_std_i.exp()
+            
+            dist_i = Normal(mu_i, std_i)
+            if given_actions is None:
+                a_i = dist_i.rsample() if rsample else dist_i.sample()
+            else:
+                a_i = given_actions[:, i].unsqueeze(-1)      # use provided action
+            lp_i = dist_i.log_prob(a_i).squeeze(-1)         # [B]
+
+            actions.append(a_i)
+            log_probs.append(lp_i)
+            mus.append(mu_i)
+            stds.append(std_i)
+
+        # stitch back
+        actions  = torch.cat(actions, dim=-1)               # [B x action_dim]
+        mus       = torch.cat(mus,      dim=-1)             # [B x action_dim]
+        stds      = torch.cat(stds,     dim=-1)             # [B x action_dim]
+        log_prob  = torch.stack(log_probs, dim=1).sum(dim=1)  # [B]
+
+        # for diagnostics
+        self.outputs['mu']  = mus
+        self.outputs['std'] = stds
+
+        return actions, log_prob

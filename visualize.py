@@ -107,6 +107,8 @@ def rollout_check_profile_all(args, dataset, agent, timestep=10):
   np.random.seed(4)
   if '24' in args.dir:
     range_i = [2,4]
+  elif '2_only' in args.dir:
+    range_i = [2]
   else:
     range_i = range(agent.n_task)
   for i in range_i:
@@ -130,7 +132,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
   # sample_idx = int(np.where(dataset.task == syllable)[0][0])
   all_idx = np.where(dataset.task == syllable)[0]
   sample_idx = int(all_idx[np.random.randint(0, len(all_idx))])
-  sample_idx = 90
+  # sample_idx = 90
   print('sample_idx:', sample_idx, type(sample_idx))
   # sample_idx = 354
   # sample_idx = 161
@@ -1701,12 +1703,12 @@ def show_uw(args, dataset, agent):
     print(name, param)
   params = dict(agent.u.named_parameters())
   if 'ctrl' in args.dir:
-    weight = params['l2.weight'].detach().cpu().numpy()
+    weight = params['l1.weight'].detach().cpu().numpy()
     # bias = params['l2.bias'].detach().cpu().numpy()
   elif 'Yilun' in args.dir:
     weight = params['trunk.0.weight'].detach().cpu().numpy()
     # bias = params['trunk.0.bias'].detach().cpu().numpy()
-  print('weight:', weight.shape)
+  # print('weight:', weight.shape)
   # bias = params['trunk.0.bias'].detach().cpu().numpy()  
   # print('bias:', bias.shape)
   # u = u1.detach().cpu().numpy()
@@ -1726,7 +1728,7 @@ def show_uw(args, dataset, agent):
     print('large idx:', large_idx[:5])
     print('large value:', u[i][large_idx[:5]])
     print(i, 'u:', u[i, 74])
-    axes[1].plot(weight[:,i], label=i)
+    # axes[1].plot(weight[:,i], label=i)
     # axes[1].plot(w[i], label=i)
     # print('u:', u[i], 'w:', w[i])
   # axes[2].plot(bias, label='bias')

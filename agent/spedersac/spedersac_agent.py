@@ -13,7 +13,7 @@ from utils.util import MLP, DoubleMLP, RFFCritic, Theta, \
     SigmoidMLP
 
 from agent.sac.sac_agent import SACAgent, DoubleQCritic
-from agent.sac.actor import DiagGaussianActor, MultiSoftmaxActor
+from agent.sac.actor import DiagGaussianActor, MultiSoftmaxActor, AutoregressiveGaussianActor
 from torchinfo import summary
 import numpy as np
 from functools import partial
@@ -152,6 +152,16 @@ class SPEDERSACAgent():
                             hidden_depth=2,
                             bias=True).to(device)
             self.update_actor_and_alpha = self.update_actor_and_alpha_deterministic
+        elif actor_type == 'autoregressive':
+            print('Using Autoregressive actor')
+            self.actor = AutoregressiveGaussianActor(
+                obs_dim=state_dim+n_task,
+                action_dim=action_dim,
+                hidden_dim=critic_and_actor_hidden_dim,
+                hidden_depth=2,
+                log_std_bounds=[-8., 2.],
+            ).to(device)
+            self.update_actor_and_alpha = self.update_actor_and_alpha_generative
         # self.actor = MultiSoftmaxActor(
         #     obs_dim=state_dim+n_task,
         #     action_dim=self.action_dim,
@@ -508,7 +518,7 @@ class SPEDERSACAgent():
         f_phi_prime = self.critic(z_phi_prime)
         q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
         loss_q = (q_data - q_E).mean()
-        loss_reg = (q_data ** 2 + q_E ** 2).mean() * 0.1
+        loss_reg = (q_data ** 2 + q_E ** 2).mean()
         loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
@@ -703,8 +713,8 @@ class SPEDERSACAgent():
         expert_state_task = torch.cat([expert_state, expert_task_onehot], -1)
 
 
-        dist = self.actor(expert_state_task)
-        expert_log_prob = dist.log_prob(expert_action).sum(-1, keepdim=True)
+        expert_log_prob = self.actor.log_prob(expert_state_task, expert_action)
+        # print('expert_log_prob:', expert_log_prob.shape)
         negll = -expert_log_prob.mean()
 
         actor_loss = negll
@@ -773,7 +783,7 @@ class SPEDERSACAgent():
         feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
         critic_info, actor_info = None, None
-        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
+        # critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
         actor_info = self.update_actor_and_alpha(batch_1)
@@ -839,11 +849,11 @@ class SPEDERSACAgent():
 
             # s_a_feature = self.rescalse_state(self.rescale_state_back(state) + self.rescale_action_back(action))
             # q = self.critic(torch.cat([s_a_feature, task_onehot], -1))
-        state_task = torch.cat([state, task_onehot], -1)
-        dist = self.actor(state_task)
-        actor_log_prob = dist.log_prob(action).sum(-1, keepdim=False)
-        assert actor_log_prob.shape == q.shape
-        # actor_log_prob = q
+        # state_task = torch.cat([state, task_onehot], -1)
+        # dist = self.actor(state_task)
+        # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=False)
+        # assert actor_log_prob.shape == q.shape
+        actor_log_prob = q
 
         return actor_log_prob, q
     
@@ -878,7 +888,10 @@ class SPEDERSACAgent():
         # Use MLE to optimize the next action
         next_action = self.MLE_optimize(next_state, action, task, n, step_size, temperature)
         # Actor
-        # next_action = self.actor(torch.concat([next_state, task_onehot], -1))
+        # next_action_dist = self.actor(torch.concat([next_state, task_onehot], -1))
+        # print('dist loc:', next_action_dist.loc)
+        # print('dist scale:', next_action_dist.scale)
+        # next_action = next_action_dist.sample()
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)

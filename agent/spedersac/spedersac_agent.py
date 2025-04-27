@@ -197,7 +197,7 @@ class SPEDERSACAgent():
                             bias=True).to(device)
             self.potential = self.Yilun_potential
             self.critic_step = self.critic_step_CD
-        else:
+        elif 'norm1ctrl' in directory:
             print('Using Norm1MLP potential')
             self.u = Norm1MLP_singlelayer(input_dim=self.n_task,
                                 output_dim=feature_dim,
@@ -208,6 +208,20 @@ class SPEDERSACAgent():
                                 bias=True).to(device)
             self.potential = self.continuous_potential
             self.critic_step = self.critic_step_continuous
+        elif 'actorclone' in directory:
+            print('Using actor clone potential')
+            self.u = MLP(input_dim=self.n_task,
+                output_dim=feature_dim,
+                hidden_dim=critic_and_actor_hidden_dim,
+                hidden_depth=0,
+                bias=False).to(device)
+            self.critic = MLP(input_dim=feature_dim,
+                            output_dim=feature_dim,
+                            hidden_dim=critic_and_actor_hidden_dim,
+                            hidden_depth=1,
+                            bias=True).to(device)
+            self.potential = self.continuous_potential
+            self.critic_step = self.critic_step_arq_continuous
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
@@ -276,11 +290,11 @@ class SPEDERSACAgent():
         return v
     
     def get_targetV(self, state, task_onehot):
-        dist = self.actor(torch.cat([state, task_onehot], -1))
-        action = dist.sample()
+        action, log_prob = self.actor(torch.cat([state, task_onehot], -1))
+        # action = dist.sample()
         # action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
         target_q = self.get_targetQ_u(state, action, task_onehot)
-        target_v = target_q - self.alpha.detach() * dist.log_prob(action).sum(-1, keepdim=True)
+        target_v = target_q - self.alpha.detach() * log_prob
         return target_v
 
     def feature_step_discrete(self, batch, s_random, a_random, s_prime_random):
@@ -449,8 +463,46 @@ class SPEDERSACAgent():
             'loss_u': loss_u.item(),
             'loss_critic_discrete': loss_critic_discrete.item(),
         }
+    
+    def critic_step_arq_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
+        ##TODO: Add w to the optimizer
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        # print('task_onehot', task_onehot.shape)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        batch_size = expert_state.shape[0]
+        actor_q = self.actor.log_prob(torch.cat([expert_state, expert_task_onehot], -1), expert_action)
+        # print('actor_q', actor_q.shape)
+        assert actor_q.shape == (expert_state.shape[0], 1)
+        z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach() # only need gradient in this place
+        f_phi = self.critic(z_phi)
+        z_u = self.u(expert_task_onehot)
+        z_w = self.w(expert_task_onehot)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
 
-
+        loss_q = torch.nn.MSELoss()(actor_q, q)
+        r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
+        V = self.get_targetV(expert_state, expert_task_onehot)
+        assert V.shape == (batch_size, 1)
+        q_target = r + V * self.discount * (1 - expert_done)
+        # print('u_target', u_target.shape, 'z_w', z_w.shape, 'z_mu', z_mu.shape, 'V', V.shape, 'u1', u1.shape, 'u2', u2.shape)
+        # assert u1.shape == u_target.shape
+        # assert u2.shape == u_target.shape
+        loss_u = torch.nn.MSELoss()(q_target, q)
+        loss = loss_q + loss_u
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        self.critic_optimizer.step()
+        return {
+            'loss_q': loss_q.item(),
+            'loss_u': loss_u.item(),
+            'loss_critic': loss.item(),
+        }
     def critic_step_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
         """
         Critic update step
@@ -780,18 +832,21 @@ class SPEDERSACAgent():
         batch_2 = buffer.sample(batch_size)
         s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
-        feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
+        feature_info, critic_info, actor_info = None, None, None
 
-        critic_info, actor_info = None, None
-        # critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
+        # feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
+
+        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        actor_info = self.update_actor_and_alpha(batch_1)
+        # actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
         self.update_target()
 
-        all_info = {**feature_info}
+        all_info = {}
+        if feature_info is not None:
+            all_info = {**all_info, **feature_info}
         if critic_info is not None:
             all_info = {**all_info, **critic_info}
         if actor_info is not None:
@@ -886,12 +941,15 @@ class SPEDERSACAgent():
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
         task = torch.FloatTensor([task]).to(self.device).reshape(1,1)
         # Use MLE to optimize the next action
-        next_action = self.MLE_optimize(next_state, action, task, n, step_size, temperature)
+        # next_action = self.MLE_optimize(next_state, action, task, n, step_size, temperature)
         # Actor
         # next_action_dist = self.actor(torch.concat([next_state, task_onehot], -1))
+        next_action, log_prob = self.actor(torch.concat([next_state, task_onehot], -1))
+        # print('next_action:', next_action)
+        # print('std:', self.actor.outputs['std'])
         # print('dist loc:', next_action_dist.loc)
         # print('dist scale:', next_action_dist.scale)
-        # next_action = next_action_dist.sample()
+        # next_action = next_action_dist.loc
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)

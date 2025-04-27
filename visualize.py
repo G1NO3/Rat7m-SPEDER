@@ -97,7 +97,7 @@ def rollout(args, dataset, agent, syllable, timestep=2):
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   plot_gif(stateseq.squeeze(1), save_path)
 
-def rollout_check_profile_all(args, dataset, agent, timestep=10):
+def rollout_check_profile_all(args, dataset, agent, timestep=15):
   peak_score_ar = np.zeros((agent.n_task, ))
   higher_than_mean_ar = np.zeros((agent.n_task, ))
   higher_than_80quantile_ar = np.zeros((agent.n_task, ))
@@ -132,7 +132,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
   # sample_idx = int(np.where(dataset.task == syllable)[0][0])
   all_idx = np.where(dataset.task == syllable)[0]
   sample_idx = int(all_idx[np.random.randint(0, len(all_idx))])
-  # sample_idx = 90
+  sample_idx = 90
   print('sample_idx:', sample_idx, type(sample_idx))
   # sample_idx = 354
   # sample_idx = 161

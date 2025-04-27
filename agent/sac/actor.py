@@ -191,7 +191,9 @@ class AutoregressiveGaussianActor(nn.Module):
             
             dist_i = Normal(mu_i, std_i)
             if given_actions is None:
-                a_i = dist_i.rsample() if rsample else dist_i.sample()
+                # a_i = dist_i.rsample() if rsample else dist_i.sample()
+                # print(f"dist_i: {dist_i.loc}")
+                a_i = dist_i.loc
             else:
                 a_i = given_actions[:, i].unsqueeze(-1)      # use provided action
             lp_i = dist_i.log_prob(a_i).squeeze(-1)         # [B]
@@ -205,7 +207,7 @@ class AutoregressiveGaussianActor(nn.Module):
         actions  = torch.cat(actions, dim=-1)               # [B x action_dim]
         mus       = torch.cat(mus,      dim=-1)             # [B x action_dim]
         stds      = torch.cat(stds,     dim=-1)             # [B x action_dim]
-        log_prob  = torch.stack(log_probs, dim=1).sum(dim=1)  # [B]
+        log_prob  = torch.stack(log_probs, dim=1).sum(dim=1, keepdims=True)  # [B, 1]
 
         # for diagnostics
         self.outputs['mu']  = mus

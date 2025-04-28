@@ -272,14 +272,16 @@ class AutoregressiveDiscreteActor(nn.Module):
                 a_i = given_actions[:, i]                          # [B]
 
             lp_i = dist.log_prob(a_i)                              # [B]
-            a_i_oh = F.one_hot(a_i, self.n_action).float()         # [B x n_action]
+            # print(f'a_i: {a_i.shape, a_i, a_i.dtype}')
+            # print(f'self.n_action: {self.n_action, type(self.n_action)}')  
+            a_i_oh = F.one_hot(a_i.to(torch.int64), num_classes = self.n_action).float()         # [B x n_action]
 
             action_list.append(a_i)
             logp_list.append(lp_i)
             prev_onehots.append(a_i_oh)
 
         actions  = torch.stack(action_list, dim=1)                # [B x n_action_dim]
-        log_prob = torch.stack(logp_list, dim=1).sum(dim=1)       # [B]
+        log_prob = torch.stack(logp_list, dim=1).sum(dim=1, keepdims=True)       # [B]
 
         # optional: store the final logits for inspection
         # self.outputs['logits'] = torch.stack(

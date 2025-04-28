@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=N_f128_actor_autoregressive_actorclone
-#SBATCH --output=./sbatch_log/N_f128_actor_autoregressive_actorclone.out
-#SBATCH --error=./sbatch_log/N_f128_actor_autoregressive_actorclone.err
+#SBATCH --job-name=N_f128_actor_autoregressive_discrete_actorclone
+#SBATCH --output=./sbatch_log/N_f128_actor_autoregressive_discrete_actorclone.out
+#SBATCH --error=./sbatch_log/N_f128_actor_autoregressive_discrete_actorclone.err
 #SBATCH --partition="wu-lab"
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -15,9 +15,9 @@ export PYTHONUNBUFFERED=TRUE
 source ~/.bashrc
 conda activate torch
 srun -u python -u main.py --alg spedersac --env kms --feature_dim 128 \
-                --max_timesteps 1000000 --dir N_f128_actor_autoregressive_actorclone \
-                --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.0 --feature_lr 0.0001 \
-                --actor_type autoregressive
+                --max_timesteps 1000000 --dir N_f128_actor_autoregressive_discrete_actorclone \
+                --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.01 --feature_lr 0.0001 \
+                --actor_type discrete_autoregressive
 #TODO: change the account from overcap to wu-lab
 #SBATCH --account="overcap"
 # srun -u python -u visualize.py --alg spedersac --env kms --feature_dim 128 \

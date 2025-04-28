@@ -19,7 +19,12 @@ def load_keymoseq(category, directory, device='cuda:0'):
   action_dim = 16
   n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  if '24' in directory:
+  if 'discrete' in directory:
+    state_dim = 16
+    action_dim = 80
+    n_task = 10
+    replay_buffer_path = f'./kms/{category}_data_discrete.pth'
+  elif '24' in directory:
     replay_buffer_path = f'./kms/{category}_data_24.pth'
   elif '2_only' in directory:
     replay_buffer_path = f'./kms/{category}_data_2_only.pth'
@@ -34,7 +39,7 @@ def load_keymoseq(category, directory, device='cuda:0'):
   print('sample next task:', replay_buffer.next_task[0:5])
   print('sample reward:', replay_buffer.reward[0:5])
   print('sample done:', replay_buffer.done[0:5])
-  assert np.isclose(replay_buffer.state[0:5]+replay_buffer.action[0:5], replay_buffer.next_state[0:5]).all()
+  # assert np.isclose(replay_buffer.state[0:5]+replay_buffer.action[0:5], replay_buffer.next_state[0:5]).all()
   return replay_buffer, state_dim, action_dim, n_task
 
 def load_rat7m(category, device='cuda:0'):
@@ -191,13 +196,17 @@ if __name__ == "__main__":
     #   print('Fix Phi and Mu')
     # else:
     #   print('Finetune Phi')
-  if 'actorclone' in args.dir:
-    pretrained_dir_name = args.dir.replace('_actorclone', '')
-    pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
-    agent.load_phi_mu(torch.load(pretrained_model_path))
-    print(f'Phi Mu loaded from {pretrained_model_path}')
-    agent.load_actor(torch.load(pretrained_model_path))
-    print(f'Actor loaded from {pretrained_model_path}')
+
+    
+  # if 'actorclone' in args.dir:
+  #   pretrained_dir_name = args.dir.replace('_actorclone', '')
+  #   pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+  #   agent.load_phi_mu(torch.load(pretrained_model_path))
+  #   print(f'Phi Mu loaded from {pretrained_model_path}')
+  #   agent.load_actor(torch.load(pretrained_model_path))
+  #   print(f'Actor loaded from {pretrained_model_path}')
+
+
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]
   # state, done = env.reset(), False

@@ -77,7 +77,7 @@ class SPEDERSACAgent():
         # self.obs_dist = pyd.Uniform(low=torch.FloatTensor(low).to(device), high=torch.FloatTensor(high).to(device))
 
         self.state_dim = state_dim
-        self.action_dim = action_dim * 5
+        self.action_dim = action_dim
         self.n_action = 5
         self.n_action_dim = self.action_dim // self.n_action
         self.feature_dim = feature_dim
@@ -245,7 +245,7 @@ class SPEDERSACAgent():
                             hidden_depth=1,
                             bias=True).to(device)
             self.potential = self.discrete_potential
-            self.critic_step = self.critic_step_discrete
+            self.critic_step = self.critic_step_arq_discrete
             
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
@@ -297,7 +297,8 @@ class SPEDERSACAgent():
         target_q = torch.min(target_q1, target_q2)
         return target_q
     def get_targetQ_u(self, state, action, task_onehot):
-        z_phi = self.phi(torch.concat([state, action], -1))
+        action_onehot = F.one_hot(action.long(), num_classes=self.n_action).reshape(*action.shape[:-1], self.action_dim).to(self.device)
+        z_phi = self.phi(torch.concat([state, action_onehot], -1))
         f_phi = self.critic_target(z_phi)
         target_u = self.u(task_onehot)
         target_q = torch.sum(f_phi * target_u, dim=-1, keepdim=True)
@@ -551,9 +552,49 @@ class SPEDERSACAgent():
         loss.backward()
         self.critic_optimizer.step()
         return {
-            'loss_CD': loss.item(),
-            'q_data': q_data.mean().item(),
-            'q_E': q_E.mean().item(),
+            'loss_q': loss_q.item(),
+            'loss_u': loss_u.item(),
+            'loss_critic': loss.item(),
+        }
+    def critic_step_arq_discrete(self, batch, s_random, a_random, s_prime_random, task_random):
+        ##TODO: Add w to the optimizer
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.n_action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        # print('task_onehot', task_onehot.shape)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        batch_size = expert_state.shape[0]
+        actor_q = self.actor.log_prob(torch.cat([expert_state, expert_task_onehot], -1), expert_action)
+        # print('actor_q', actor_q.shape)
+        assert actor_q.shape == (expert_state.shape[0], 1)
+        expert_action_onehot = torch.eye(self.n_action)[expert_action.long()].reshape(-1, self.action_dim).to(self.device)
+        z_phi = self.phi(torch.concat([expert_state, expert_action_onehot], -1)).detach() # only need gradient in this place
+        f_phi = self.critic(z_phi)
+        z_u = self.u(expert_task_onehot)
+        z_w = self.w(expert_task_onehot)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+
+        loss_q = torch.nn.MSELoss()(actor_q, q)
+        r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
+        V = self.get_targetV(expert_state, expert_task_onehot).detach()
+        assert V.shape == (batch_size, 1)
+        q_target = r + V * self.discount * (1 - expert_done)
+        # print('u_target', u_target.shape, 'z_w', z_w.shape, 'z_mu', z_mu.shape, 'V', V.shape, 'u1', u1.shape, 'u2', u2.shape)
+        # assert u1.shape == u_target.shape
+        # assert u2.shape == u_target.shape
+        loss_u = torch.nn.MSELoss()(q_target, q)
+        loss = loss_q + loss_u
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        self.critic_optimizer.step()
+        return {
+            'loss_q': loss_q.item(),
+            'loss_u': loss_u.item(),
+            'loss_critic': loss.item(),
         }
     def Gibbs_step(self, state, initial_action, task, temperature=1):
         assert state.shape[-1] == self.state_dim
@@ -604,7 +645,7 @@ class SPEDERSACAgent():
             action = self.Gibbs_step(state, initial_action, task, temperature)
         return action
 
-    def critic_step(self, batch, s_random, a_random, s_prime_random, task_random):
+    def critic_step_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
         """
         Critic update step
         """
@@ -945,12 +986,12 @@ class SPEDERSACAgent():
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info, critic_info, actor_info = None, None, None
 
-        # feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
+        feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
         critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        # actor_info = self.update_actor_and_alpha(batch_1)
+        actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
         self.update_target()

@@ -14,16 +14,27 @@ from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
 from utils.util import unpack_batch
-
-##TODO: when train, replace this with test_data
-def load_keymoseq(category, device='cuda:0'):
+def load_keymoseq(category, directory, device='cuda:0'):
   state_dim = 16
   action_dim = 16
   n_task = 10
   replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  replay_buffer_path = f'./kms/replay_buffer_mildnormalized200_discreteaction.pth'
+  if '24' in directory:
+    replay_buffer_path = f'./kms/{category}_data_24.pth'
+  elif '2_only' in directory:
+    replay_buffer_path = f'./kms/{category}_data_2_only.pth'
+  else:
+    replay_buffer_path = f'./kms/{category}_data_continuous_a200.pth'
   replay_buffer.load_state_dict(torch.load(replay_buffer_path))
   print(f'Replay buffer loaded from {replay_buffer_path}')
+  print('sample state:', replay_buffer.state[0:5])
+  print('sample action:', replay_buffer.action[0:5])
+  print('sample next state:', replay_buffer.next_state[0:5])
+  print('sample task:', replay_buffer.task[0:5])
+  print('sample next task:', replay_buffer.next_task[0:5])
+  print('sample reward:', replay_buffer.reward[0:5])
+  print('sample done:', replay_buffer.done[0:5])
+  assert np.isclose(replay_buffer.state[0:5]+replay_buffer.action[0:5], replay_buffer.next_state[0:5]).all()
   return replay_buffer, state_dim, action_dim, n_task
 
 def load_rat7m(category, device='cuda:0'):
@@ -72,6 +83,7 @@ if __name__ == "__main__":
   parser.add_argument("--feature_lr", default=5e-4, type=float)
   parser.add_argument("--policy_lr", default=3e-4, type=float)
   parser.add_argument("--start_timesteps", default=1e3, type=int)
+  parser.add_argument("--actor_type", default='gaussian', type=str)      # Actor type
   args = parser.parse_args()
 
   if args.alg == 'mulvdrq':
@@ -94,7 +106,7 @@ if __name__ == "__main__":
   # setup log 
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
-  expert_buffer, state_dim, action_dim, n_task = load_keymoseq('train')
+  expert_buffer, state_dim, action_dim, n_task = load_keymoseq('train', args.dir)
   policy_buffer = buffer.ReplayBuffer(state_dim, action_dim, 100000)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):
@@ -115,6 +127,8 @@ if __name__ == "__main__":
     "discount": args.discount,
     # "tau": args.tau,
     # "hidden_dim": args.hidden_dim,
+    "directory": args.dir,
+    'actor_type': args.actor_type,
   }
 
   # Initialize policy
@@ -157,7 +171,9 @@ if __name__ == "__main__":
     kwargs['alpha'] = 1
     kwargs['device'] = 'cuda:0'
     agent = spedersac_agent.ValueDICEAgent(**kwargs)
-  
+  args_kwargs = {'args': vars(args), 'kwargs': kwargs}
+  np.save(os.path.join(save_path, 'args_kwargs.npy'), args_kwargs)
+  print(f'Args saved to {os.path.join(save_path, "args_kwargs.npy")}')
   # replay_buffer = buffer.ReplayBuffer(state_dim, action_dim)
   # agent.load_state_dict(torch.load(f'./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth'))
   # print(f'Agent loaded from ./model/{args.env}/{args.alg}/{args.dir}/{args.seed}/checkpoint_300000.pth')
@@ -175,6 +191,13 @@ if __name__ == "__main__":
     #   print('Fix Phi and Mu')
     # else:
     #   print('Finetune Phi')
+  if 'actorclone' in args.dir:
+    pretrained_dir_name = args.dir.replace('_actorclone', '')
+    pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
+    agent.load_phi_mu(torch.load(pretrained_model_path))
+    print(f'Phi Mu loaded from {pretrained_model_path}')
+    agent.load_actor(torch.load(pretrained_model_path))
+    print(f'Actor loaded from {pretrained_model_path}')
   # Evaluate untrained policy
   # evaluations = [util.eval_policy(agent, eval_env)]
   # state, done = env.reset(), False

@@ -68,81 +68,125 @@ def rollout_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     rollout(args, dataset, agent, i)
 
-def rollout(args, dataset, agent, syllable, timestep=20):
-  while True:
-    sample = dataset.sample(args.batch_size)
-    task = sample.task
-    # print(task)
-    all_idx = torch.where(task == syllable)[0]
-    if len(all_idx) > 0:
-      break
-  idx = all_idx[0]
-  state = sample.state[idx:idx+1]
-  action = sample.action[idx:idx+1]
-  # print('state:', state)
-  # print('action:', action)
-  # state = torch.FloatTensor(dataset.state[15:16])
-  # action = torch.FloatTensor(dataset.action[15:16])
+def rollout(args, dataset, agent, syllable, timestep=2):
+  # while True:
+  #   sample = dataset.sample(args.batch_size)
+  #   task = sample.task
+  #   # print(task)
+  #   all_idx = torch.where(task == syllable)[0]
+  #   if len(all_idx) > 0:
+  #     break
+  idx = 354
+  # state = dataset.state[idx:idx+1]
+  # action = dataset.action[idx:idx+1]
+  state = torch.FloatTensor(dataset.state[idx:idx+1])
+  action = torch.FloatTensor(dataset.action[idx:idx+1])
+  print('state:', state)
+  print('action:', action)
+  print('task:', dataset.task[idx:idx+1])
   stateseq = torch.zeros((timestep, *state.shape))
   actionseq = torch.zeros((timestep, *action.shape))
   stateseq[0] = state
   actionseq[0] = action
   ap_q_ar = torch.zeros((timestep, 1))
   for i in range(1, timestep):
-    state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
-    print('sprime ll:',sp_likelihood, 'q::',ap_q)
-    ap_q_ar[i] = ap_q
+    state, action, sp_likelihood, ap_q = agent.step(state, action, syllable)
+    # print(i, 'action:', action)
+    # print(sp_likelihood, ap_q)
     stateseq[i] = state
     actionseq[i] = action
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   plot_gif(stateseq.squeeze(1), save_path)
-  fig, ax = plt.subplots(1,1, figsize=(10,10))
-  ax.hist(ap_q_ar.reshape(-1), bins=20, alpha=0.6, density=True, color='orange')
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}_ap_q.png'
-  if not os.path.exists(os.path.dirname(save_path)):
-    os.makedirs(os.path.dirname(save_path))
-  plt.savefig(save_path)
-  print(save_path)
 
-def rollout_check_profile(args, dataset, agent, syllable, timestep=2):
+def rollout_check_profile_all(args, dataset, agent, timestep=15):
+  peak_score_ar = np.zeros((agent.n_task, ))
+  higher_than_mean_ar = np.zeros((agent.n_task, ))
+  higher_than_80quantile_ar = np.zeros((agent.n_task, ))
+  action_to_linear_score_ar = np.zeros((agent.n_task, ))
+  ap_q_ar = np.zeros((agent.n_task, ))
+  stateseq_ar = np.zeros((agent.n_task, timestep, agent.state_dim))
+  np.random.seed(4)
+  if '24' in args.dir:
+    range_i = [2,4]
+  elif '2_only' in args.dir:
+    range_i = [2]
+  else:
+    range_i = range(agent.n_task)
+  for i in range_i:
+    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q, stateseq = \
+      rollout_check_profile(args, dataset, agent, i, timestep=timestep, temperature=1, n=1000, step_size=1e-4)
+    peak_score_ar[i] = peak_score
+    higher_than_mean_ar[i] = higher_than_mean
+    higher_than_80quantile_ar[i] = higher_than_80quantile
+    action_to_linear_score_ar[i] = action_to_linear_score
+    ap_q_ar[i] = ap_q
+    stateseq_ar[i] = stateseq.squeeze(1)
+  plot_gif_all_syllables(stateseq_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout.gif')
+  with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_profile.txt', 'w') as f:
+    f.write('syllable, peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score, ap_q\n')
+    for i in range(agent.n_task):
+      f.write(f'{i}, {peak_score_ar[i]}, {higher_than_mean_ar[i]}, {higher_than_80quantile_ar[i]}, {action_to_linear_score_ar[i]}, {ap_q_ar[i]}\n')
+
+def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature, n, step_size):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = 1434
+  # sample_idx = int(np.where(dataset.task == syllable)[0][0])
+  all_idx = np.where(dataset.task == syllable)[0]
+  sample_idx = int(all_idx[np.random.randint(0, len(all_idx))])
+  sample_idx = 90
+  print('sample_idx:', sample_idx, type(sample_idx))
+  # sample_idx = 354
+  # sample_idx = 161
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   print('state:', state.shape, 'action:', action.shape)
   stateseq = torch.zeros((timestep, *state.shape))
   actionseq = torch.zeros((timestep, *action.shape))
   stateseq[0] = state
   actionseq[0] = action
-  print(dataset.task[1434:1447])
-  print('state:', dataset.state[1434:1447])  
-  print('action:', dataset.action[1434:1447])
-  lr = torch.load('./kms/linear_model_discrete.pth')
+  print(dataset.task[354:359])
+  print('state:', dataset.state[354:359])  
+  print('action:', dataset.action[354:359])
+  lr = torch.load('./kms/linear_model.pth')
+  batch_size = 1
+  bins = 21
+  peak_score_ar = np.zeros((timestep, ))
+  higher_than_mean_ar = np.zeros((timestep, ))
+  higher_than_80quantile_ar = np.zeros((timestep, ))
+  action_to_linear_score_ar = np.zeros((timestep, ))
+  ap_q_ar = np.zeros((timestep, ))
   for i in range(1,timestep):
     print(i, 'action:', action)
-    action_pred_continuous = lr.predict(state.detach().cpu().numpy())
-    action_pred_continuous = torch.FloatTensor(action_pred_continuous)
-    print('action_pred_continuous:', action_pred_continuous)
-    action_pred = torch.clip(torch.round(action_pred_continuous), 0, agent.n_action-1).long()
-    batch_action = action.reshape(1, 1, agent.n_action_dim).repeat(agent.n_action_dim, agent.n_action, 1)
-    for j in range(agent.n_action_dim):
-      batch_action[j, :, j] = torch.arange(agent.n_action)
-    batch_action_onehot = torch.eye(agent.n_action)[batch_action.long()].reshape(agent.n_action_dim, agent.n_action, agent.action_dim).to(agent.device)
-    batch_state = state.reshape(1, 1, agent.state_dim).repeat(agent.n_action_dim, agent.n_action, 1)
-    batch_state_action = torch.cat([batch_state, batch_action_onehot], dim=-1)
-    batch_phi = agent.phi(batch_state_action)
-    batch_f_phi = agent.critic(batch_phi)
-    batch_task = task.reshape(1, 1, 1).repeat(agent.n_action_dim, agent.n_action, 1)
-    batch_task_onehot = torch.eye(agent.n_task)[batch_task.long()].reshape(agent.n_action_dim, agent.n_action, agent.n_task).to(agent.device)
-    batch_u = agent.u(batch_task_onehot)
-    batch_q = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False).detach().cpu()
-    assert batch_q.shape == (agent.n_action_dim, agent.n_action)
-    draw_profile(agent, batch_q, state, action, action_pred, i)
+    action_pred = torch.FloatTensor(lr.predict(state.detach().cpu().numpy()))
+    # action_pred_continuous = torch.FloatTensor(action_pred_continuous)
+
+    assert next_state.shape == (batch_size, agent.state_dim)
+    center = (bins-1)//2
+    total_range = 20/scale_factor
+    incremental_matrix = torch.eye(agent.action_dim).reshape(agent.action_dim, 1, agent.action_dim).repeat(1, bins, 1) \
+                      * ((torch.arange(bins) - center) * total_range/(bins-1)).reshape(1, bins, 1)
+    assert incremental_matrix.shape == (agent.action_dim, bins, agent.action_dim)
+    new_action = action.reshape(batch_size, 1, 1, agent.action_dim) + incremental_matrix.reshape(1, agent.action_dim, bins, agent.action_dim)
+
+    next_state = state + action
+    next_state_batch = next_state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, agent.action_dim, bins, 1)
+    # state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
+    task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
+    batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
+    # print('batch_q:', batch_q.shape)
+    assert batch_q.shape == (agent.action_dim, bins)
+    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action.detach().numpy(), 
+                                                                                                state, action.detach().numpy(), action_pred, i, args.scale_factor)
+    peak_score_ar[i] = peak_score
+    higher_than_mean_ar[i] = higher_than_mean
+    higher_than_80quantile_ar[i] = higher_than_80quantile
+    action_to_linear_score_ar[i] = action_to_linear_score
     # state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
-    # state = state + (action_pred_continuous-2)/100
-    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
+    # state = state + (action_pred_continuous-2)/100##TODO: 
+    next_state, next_action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=temperature, 
+                                                              n=n, step_size=step_size)
+    ap_q_ar[i] = ap_q
     state = next_state
     action = next_action
     stateseq[i] = state
@@ -179,10 +223,69 @@ def draw_profile(agent, q, state, action, action_pred, timestep):
     os.makedirs(os.path.dirname(fig_path))
   plt.savefig(fig_path)
   print(fig_path)
+  return peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score
 
+def plot_gif_all_syllables(state_seqs_all, save_path):
+  # state_seqs_all: [syllable, timestep, state_dim]
+  edges, state_name, n_dim = get_edges(state_seqs_all.shape[2])
+  fig, axis = plt.subplots(3, 4, figsize=(20, 15))
+  n_bodyparts = len(state_name)
+  n_img = state_seqs_all.shape[1]
+  n_syllable = state_seqs_all.shape[0]
+  dims, name = [0,1], 'xy'
+  state_seqs_to_plot = state_seqs_all.reshape(-1, n_img, n_bodyparts, 2)
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  rasters = []
+  state_seqs_to_plot -= state_seqs_to_plot.mean(axis=(1,2), keepdims=True)
+  axmin = -0.2
+  axmax = 0.2
+  aymin = -0.2
+  aymax = 0.2
+
+  ymin = np.min(state_seqs_to_plot[...,1], axis=(-1,-2))
+  ymax = np.max(state_seqs_to_plot[...,1], axis=(-1,-2))
+  xmin = np.min(state_seqs_to_plot[...,0], axis=(-1,-2))
+  xmax = np.max(state_seqs_to_plot[...,0], axis=(-1,-2))
+  print('ymin:', ymin.shape, 'ymax:', ymax.shape)
+  indicator = np.where((aymin > ymin) | (aymax < ymax) | (axmin > xmin) | (axmax < xmax), 1, 0)
+  aymin = np.where(indicator, -0.3, aymin)
+  aymax = np.where(indicator, 0.3, aymax)
+  axmin = np.where(indicator, -0.3, axmin)
+  axmax = np.where(indicator, 0.3, axmax)
+  for i in range(n_img):
+    for j in range(n_syllable):
+      axis[j//4, j%4].clear()
+      for p1, p2 in edges:
+        axis[j//4, j%4].plot(
+            *state_seqs_to_plot[j, i, (p1, p2)].T,
+            color=keypoint_colors[p1],
+            linewidth=5.0)
+      axis[j//4, j%4].scatter(
+          *state_seqs_to_plot[j, i].T,
+          c=keypoint_colors,
+          s=100)
+      axis[j//4, j%4].set_title(f'syllable {j}', fontsize=30)
+      axis[j//4, j%4].axis('off')
+      axis[j//4, j%4].set_xlim(axmin[j], axmax[j])
+      axis[j//4, j%4].set_ylim(aymin[j], aymax[j])
+    rasters.append(rasterize_figure(fig))
+  pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
+  # Save the PIL Images as an animated GIF
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  pil_images[0].save(
+      save_path,
+      save_all=True,
+      append_images=pil_images[1:],
+      duration=100,
+      loop=0,
+  )
+  print(save_path)
 
 def plot_gif(stateseq, save_path):
   # stateseq: [timestep, state_dim]
+  clockwise, pc_to_plot = is_clockwise(stateseq)
   edges, state_name, n_dim = get_edges(stateseq.shape[1])
   fig, axis = plt.subplots(1, 1, figsize=(5, 6))
   n_bodyparts = len(state_name)
@@ -194,6 +297,7 @@ def plot_gif(stateseq, save_path):
     dims, name = [0,1], 'xy'
     state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
     
+  state_seq_to_plot -= state_seq_to_plot.mean(axis=(0,1), keepdims=True)
   cmap = plt.cm.get_cmap('viridis')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   rasters = []
@@ -201,19 +305,31 @@ def plot_gif(stateseq, save_path):
   ymax = state_seq_to_plot[:,:,1].max()
   xmin = state_seq_to_plot[:,:,0].min()
   xmax = state_seq_to_plot[:,:,0].max()
+  aymin=-0.2
+  aymax=0.2
+  axmin=-0.2
+  axmax=0.2
+  if aymin > ymin or aymax < ymax or axmin > xmin or axmax < xmax:
+    aymin = -0.4
+    aymax = 0.4
+    axmin = -0.4
+    axmax = 0.4
   for i in range(n_img):
     axis.clear()
     for p1, p2 in edges:
       axis.plot(
           *state_seq_to_plot[i, (p1, p2)].T,
           color=keypoint_colors[p1],
-          linewidth=5.0)
+          linewidth=5.0,zorder=0)
     axis.scatter(
         *state_seq_to_plot[i].T,
         c=keypoint_colors,
-        s=100)
-    axis.set_xlim(xmin, xmax)
-    axis.set_ylim(ymin, ymax)
+        s=100,zorder=0)
+    axis.quiver(0, 0, pc_to_plot[i,0], pc_to_plot[i,1], angles='xy', scale_units='xy', scale=10, color='r',
+                zorder=1)
+    axis.set_title(f'clockwise:{clockwise}', fontsize=30)
+    axis.set_xlim(axmin, axmax)
+    axis.set_ylim(aymin, aymax)
     
     rasters.append(rasterize_figure(fig))
 
@@ -237,6 +353,56 @@ def rasterize_figure(fig):
   raster_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
   raster = raster_flat.reshape((height, width, 3))
   return raster
+
+def is_clockwise(stateseq):
+  # stateseq: [timestep, state_dim]
+  edges, state_name, n_dim = get_edges(stateseq.shape[1])
+  head_idx = state_name.index('head')
+  n_bodyparts = len(state_name)
+  n_img = stateseq.shape[0]
+  state_seq_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
+  state_seq_to_plot = state_seq_to_plot - state_seq_to_plot.mean(axis=1, keepdims=True)
+  _, _, vhs = np.linalg.svd(state_seq_to_plot)
+  pc_to_plot = vhs[:,0]
+  head_vector = state_seq_to_plot[:, head_idx, :]
+  flip_sign = np.where(np.sum(head_vector*pc_to_plot, axis=-1, keepdims=True) < 0, -1, 1)
+  pc_to_plot = pc_to_plot * flip_sign
+  pc_seq_0 = pc_to_plot[:-1]
+  pc_seq_1 = pc_to_plot[1:]
+  cross_product = pc_seq_0[:,0]*pc_seq_1[:,1] - pc_seq_0[:,1]*pc_seq_1[:,0]
+  # cross_product = state_seq_0[:,0]*state_seq_1[:,1] - state_seq_0[:,1]*state_seq_1[:,0]
+  clockwise = np.sum(cross_product) < 0
+  return clockwise, pc_to_plot
+
+def plot_figure_PC(state, save_path):
+  # state: [state_dim, ]
+  edges, state_name, n_dim = get_edges(state.shape[-1])
+  fig, axis = plt.subplots(1, 1, figsize=(5, 6))
+  state_to_plot = state.reshape(-1, 2)
+  state_to_plot -= state_to_plot.mean(axis=0)
+  _, _, vhs = np.linalg.svd(state_to_plot)
+  pc_to_plot = vhs[0]
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  xmin = min(state_to_plot[:, 0].min(), pc_to_plot[0])
+  xmax = max(state_to_plot[:, 0].max(), pc_to_plot[0])
+  ymin = min(state_to_plot[:, 1].min(), pc_to_plot[1])
+  ymax = max(state_to_plot[:, 1].max(), pc_to_plot[1])
+  axis.set_xlim(xmin, xmax)
+  axis.set_ylim(ymin, ymax)
+  for p1, p2 in edges:
+    axis.plot(
+        *state_to_plot[(p1, p2),:].T,
+        color=keypoint_colors[p1],
+        linewidth=5.0)
+  axis.scatter(
+      *state_to_plot.T,
+      c=keypoint_colors,
+      s=100)
+  axis.quiver(0, 0, pc_to_plot[0], pc_to_plot[1], angles='xy', scale_units='xy', scale=1, color='r')
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
 
 def check_action_space(args, dataset, agent):
   times = 100
@@ -486,7 +652,7 @@ def cal_IG_matrix(args, dataset, agent, times=3):
     for j in range(agent.feature_dim):
       attr_ig, delta = ig.attribute(sa_ar, target=j, return_convergence_delta=True, 
                       baselines=-1)
-      ig_matrix_all[i][j] = attr_ig.mean(dim=0).detach().cpu()
+      ig_matrix_all[i][j] = attr_ig.mean(dim=0).detach().cpu()# average over batch
       ig_std_matrix_all[i][j] = attr_ig.std(dim=0).detach().cpu()
     # use local gradients
     # phi_sa = agent.phi(sa_ar)
@@ -980,6 +1146,8 @@ def action_test_logll(args, dataset, agent):
   positive_q = np.zeros(times)
   negative_logll = np.zeros(times)
   negative_q = np.zeros(times)
+  lr_logll = np.zeros(times)
+  lr_q = np.zeros(times)
   lr = torch.load('./kms/linear_model.pth')
   for i in range(times):
     batch_1 = dataset.sample(batch_size)
@@ -987,6 +1155,7 @@ def action_test_logll(args, dataset, agent):
     # action_1 = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
     action_1 = batch_1.action
     action_2 = batch_2.action
+    action_pred = torch.FloatTensor(lr.predict(batch_1.state.detach().cpu().numpy()))
     # action_2 = torch.randn_like(batch_1.action)
     print('original action:', batch_1.action[0], 'new action:', action_2[0]) 
     positive_logll_one, positive_q_one = agent.action_loglikelihood(batch_1.state, action_1, batch_1.task)
@@ -995,24 +1164,36 @@ def action_test_logll(args, dataset, agent):
     negative_logll_one, negative_q_one = agent.action_loglikelihood(batch_1.state, action_2, batch_1.task)
     negative_logll[i] = negative_logll_one.detach().cpu().numpy().mean()
     negative_q[i] = negative_q_one.detach().cpu().numpy().mean()
+    lr_logll_one, lr_q_one = agent.action_loglikelihood(batch_1.state, action_pred, batch_1.task)
+    lr_logll[i] = lr_logll_one.detach().cpu().numpy().mean()
+    lr_q[i] = lr_q_one.detach().cpu().numpy().mean()
+
     print('pos:', positive_logll[i], positive_q[i])
     print('neg:', negative_logll[i], negative_q[i])
+    print('lr:', lr_logll[i], lr_q[i])
   
   print('pos:', np.mean(positive_logll), np.std(positive_logll), np.mean(positive_q), np.std(positive_q))
   print('neg:', np.mean(negative_logll), np.std(negative_logll), np.mean(negative_q), np.std(negative_q))
+  print('lr:', np.mean(lr_logll), np.std(lr_logll), np.mean(lr_q), np.std(lr_q))
   t, p = ttest_ind(positive_logll, negative_logll)
   print('t:', t, 'p:', p)
+  t2, p2 = ttest_ind(positive_logll, lr_logll)
+  print('t2:', t2, 'p2:', p2)
   fig, ax = plt.subplots(1,2, figsize=(10,5))
   ax[0].hist(positive_logll, bins=20, alpha=0.6, density=True, color='orange')
   ax[0].hist(negative_logll, bins=20, alpha=0.6, density=True, color='g')
-  ax[0].legend(['positive sample', 'negative sample'])
-  ax[0].set_title(f'action log likelihood, p={p}')
+  ax[0].hist(lr_logll, bins=20, alpha=0.6, density=True, color='b')
+  ax[0].legend(['positive sample', 'negative sample', 'lr pred'])
+  ax[0].set_title(f'action log likelihood, p={p},\n p2={p2}')
   t,p = ttest_ind(positive_q, negative_q)
   print('t:', t, 'p:', p)
+  t2,p2 = ttest_ind(positive_q, lr_q)
+  print('t2:', t2, 'p2:', p2)
   ax[1].hist(positive_q, bins=20, alpha=0.6, density=True, color='orange')
   ax[1].hist(negative_q, bins=20, alpha=0.6, density=True, color='g')
-  ax[1].legend(['positive sample', 'negative sample'])
-  ax[1].set_title(f'action q value, p={p}')
+  ax[1].hist(lr_q, bins=20, alpha=0.6, density=True, color='b')
+  ax[1].legend(['positive sample', 'negative sample', 'lr pred'])
+  ax[1].set_title(f'action q value, p={p},\n p2={p2}')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
@@ -1026,14 +1207,14 @@ def action_test_logll(args, dataset, agent):
 def action_profile_likelihood(args, dataset, agent):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = 6
+  sample_idx = 1565
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
   bins = 31
   all_logll = torch.zeros(agent.action_dim, bins)
   show_idx = 0
-  total_range = 20/scale_factor
+  total_range = 100/scale_factor
   center = (bins-1)//2
   lr = torch.load('./kms/linear_model.pth')
   action_pred = lr.predict(state.detach().cpu().numpy())
@@ -1049,7 +1230,7 @@ def action_profile_likelihood(args, dataset, agent):
       # f.write(f'{new_next_state[show_idx]}\n')
       # f.write(f'{state[0]}\n')
       # f.write(f'{action[0]}\n')
-      logll[j] = agent.action_loglikelihood(state, new_action, task)[0].detach().cpu()
+      logll[j] = agent.action_loglikelihood(state, new_action, task)[1].detach().cpu()
       # f.write(f'{logll[j]}\n')
       # print(logll[j])
     all_logll[i] = logll
@@ -1085,9 +1266,9 @@ def action_profile_likelihood_batch(args, dataset, agent):
   scale_factor = args.scale_factor
   batch_size = 256
   times = 10
-  bins = 31
+  bins = 21
   metric_matrix = np.zeros((times, 3))
-  linear_model_metric_matrix = np.zeros((times, 2))
+  linear_model_metric_matrix = np.zeros((times, 3))
   linear_model = torch.load('./kms/linear_model.pth')
   action_dim = agent.action_dim
   for i in range(times):
@@ -1105,7 +1286,7 @@ def action_profile_likelihood_batch(args, dataset, agent):
     new_action = action.reshape(batch_size, 1, 1, agent.action_dim) + incremental_matrix.reshape(1, agent.action_dim, bins, agent.action_dim)
     state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
     task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
-    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[0].detach().cpu()
+    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[1].detach().cpu()
     print('logll:', logll.shape)
     assert logll.shape == (batch_size, agent.action_dim, bins)
     peak_idx = torch.argmax(logll, dim=-1)
@@ -1120,15 +1301,24 @@ def action_profile_likelihood_batch(args, dataset, agent):
     action_pred = linear_model.predict(state.detach().cpu().numpy())
     action_pred = torch.FloatTensor(action_pred)
     assert action_pred.shape == action.shape
-    linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[0].detach().cpu()
+    linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[1].detach().cpu()
     # print('linear model logll:', linear_model_logll.shape, 'logll:', logll.shape, 'quantile:', quantile.shape)
     assert linear_model_logll.shape == (batch_size, )
-    print('linear model logll:', linear_model_logll)
-    print('logll mean:', logll.mean(-1).mean(-1))
-    print('quantile:', quantile.mean(-1))
+    # print('linear model logll:', linear_model_logll)
+    # print('logll mean:', logll.mean(-1).mean(-1))
+    # print('quantile:', quantile.mean(-1))
+    # print('center:', center)
+    # print('action_pred:', action_pred)
+    # print('action:', action)
+    # print('action_pred - action:', (action_pred - action))
+    action_pred_idx = torch.round((action_pred - action)/(total_range/(bins-1)))+center
+    # print('action pred idx:', action_pred_idx)
+    peak_score_linear = torch.where((action_pred_idx==peak_idx), 1., 0.).mean()
+    # print('peak score linear:', peak_score_linear)
     higher_than_mean_linear = torch.where(linear_model_logll - logll.mean(-1).mean(-1)>0, 1., 0.).mean()
+    # print('if higher than mean:', (linear_model_logll - logll.mean(-1).mean(-1)>0))
     higher_than_80quantile_linear = torch.where(linear_model_logll - quantile.mean(-1)>0, 1., 0.).mean()
-    linear_model_metric_matrix[i] = higher_than_mean_linear, higher_than_80quantile_linear
+    linear_model_metric_matrix[i] = peak_score_linear, higher_than_mean_linear, higher_than_80quantile_linear
   # print('metric:', metric_matrix.mean(0), metric_matrix.std(0)) 
   metric_mean = metric_matrix.mean(0)
   metric_std = metric_matrix.std(0)
@@ -1142,8 +1332,9 @@ def action_profile_likelihood_batch(args, dataset, agent):
     f.write(f'peak score: {metric_mean[0]:.4f} +- {metric_std[0]:.4f}\n')
     f.write(f'higher than mean: {metric_mean[1]:.4f} +- {metric_std[1]:.4f}\n')
     f.write(f'higher than 80 quantile: {metric_mean[2]:.4f} +- {metric_std[2]:.4f}\n')
-    f.write(f'linear model higher than mean: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
-    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
+    f.write(f'linear model peak score: {linear_metric_mean[0]:.4f} +- {linear_metric_std[0]:.4f}\n')
+    f.write(f'linear model higher than mean: {linear_metric_mean[1]:.4f} +- {linear_metric_std[1]:.4f}\n')
+    f.write(f'linear model higher than 80 quantile: {linear_metric_mean[2]:.4f} +- {linear_metric_std[2]:.4f}\n')
   print(text_path)
   return
 
@@ -1357,7 +1548,7 @@ def profile_likelihood_batch(args, dataset, agent):
     assert incremental_matrix.shape == (agent.state_dim, bins, agent.state_dim)
     new_next_state = next_state.reshape(batch_size, 1, 1, agent.state_dim) + incremental_matrix.reshape(1, agent.state_dim, bins, agent.state_dim)
     state_batch = state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, agent.state_dim, bins, 1)
-    action_batch = action.reshape(batch_size, 1, 1, agent.action_dim//agent.n_action).repeat(1, agent.state_dim, bins, 1)
+    action_batch = action.reshape(batch_size, 1, 1, agent.action_dim).repeat(1, agent.state_dim, bins, 1)
     # with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/state.txt', 'w') as f:
     #   for k in range(agent.state_dim):
     #     for l in range(bins):
@@ -1367,7 +1558,7 @@ def profile_likelihood_batch(args, dataset, agent):
     #   for l in range(bins):
     #     print('new_next_state:', new_next_state[0,l])
     # print(state_batch.dtype, action_batch.dtype, new_next_state.dtype)
-    logll = agent.state_likelihood(state_batch.reshape(-1,state_dim), action_batch.reshape(-1,action_dim//agent.n_action), 
+    logll = agent.state_likelihood(state_batch.reshape(-1,state_dim), action_batch.reshape(-1,action_dim), 
                                    new_next_state.reshape(-1,state_dim))[0].reshape(batch_size, agent.state_dim, bins)
     assert logll.shape == (batch_size, agent.state_dim, bins)
     # with open(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/logll.txt', 'w') as f:
@@ -1522,12 +1713,24 @@ def show_phi_weight(args, dataset, agent):
   # plt.close()
   return
   
-def show_u(args, dataset, agent):
+def show_uw(args, dataset, agent):
   print('n_task:', agent.n_task)
   task_all = torch.eye(agent.n_task)
   # u1, u2 = agent.critic(task_all)
   u_all = agent.u(task_all)
   w_all = agent.w(task_all)
+  for name, param in agent.u.named_parameters():
+    print(name, param)
+  params = dict(agent.u.named_parameters())
+  if 'ctrl' in args.dir:
+    weight = params['l1.weight'].detach().cpu().numpy()
+    # bias = params['l2.bias'].detach().cpu().numpy()
+  elif 'Yilun' in args.dir:
+    weight = params['trunk.0.weight'].detach().cpu().numpy()
+    # bias = params['trunk.0.bias'].detach().cpu().numpy()
+  # print('weight:', weight.shape)
+  # bias = params['trunk.0.bias'].detach().cpu().numpy()  
+  # print('bias:', bias.shape)
   # u = u1.detach().cpu().numpy()
   u = u_all.detach().cpu().numpy()
   w = w_all.detach().cpu().numpy()
@@ -1535,15 +1738,25 @@ def show_u(args, dataset, agent):
   save_dir_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_dir_path):
     os.makedirs(save_dir_path)
-  fig, axes = plt.subplots(2,1, figsize=(15,5))
+  fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
   for i in range(agent.n_task):
+    # predicted_ui = weight[:,i] + bias
+    # axes[0].plot(predicted_ui, label=i)
     axes[0].plot(u[i], label=i)
-    axes[1].plot(w[i], label=i)
-  axes[0].legend()
+    large_idx = np.argsort(np.abs(u[i]))[::-1]
+    print('large idx:', large_idx[:5])
+    print('large value:', u[i][large_idx[:5]])
+    print(i, 'u:', u[i, 74])
+    # axes[1].plot(weight[:,i], label=i)
+    # axes[1].plot(w[i], label=i)
+    # print('u:', u[i], 'w:', w[i])
+  # axes[2].plot(bias, label='bias')
   axes[0].set_title('u')
+  # axes[1].set_title('w')
+  axes[0].legend()
   axes[1].legend()
-  axes[1].set_title('w')
+  axes[2].legend()
   # axes[1].hist(u.flatten(), bins=20, density=True, color='orange')
   save_path = f'{save_dir_path}/uw.png'
   plt.savefig(save_path)
@@ -1638,10 +1851,11 @@ if __name__ == "__main__":
   parser.add_argument("--times", default=3, type=int)
   parser.add_argument("--device", default='cuda:0', type=str)
   parser.add_argument("--scale_factor", default=1, type=float)
+  parser.add_argument("--actor_type", default='gaussian', type=str)
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.device)
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.dir, args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
   torch.manual_seed(args.seed)
@@ -1654,6 +1868,7 @@ if __name__ == "__main__":
     "discount": args.discount,
     # "tau": args.tau,
     # "hidden_dim": args.hidden_dim,
+    "actor_type": args.actor_type,
   }
 
   kwargs['extra_feature_steps'] = 2
@@ -1671,6 +1886,7 @@ if __name__ == "__main__":
   kwargs['n_task'] = n_task
   kwargs['tau'] = args.tau
   kwargs['hidden_dim'] = args.hidden_dim  
+  kwargs['directory'] = args.dir
   agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   # agent = spedersac_agent.QR_IRLAgent(**kwargs)
   # agent = spedersac_agent.SimpleWorldModel(**kwargs)
@@ -1681,18 +1897,21 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  # show_u(args, replay_buffer, agent)
-  # show_phi_weight(args, replay_buffer, agent)
-  # show_last_weight(args, replay_buffer, agent)
+  show_uw(args, replay_buffer, agent)
+  rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
-  # action_profile_likelihood_discrete(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
-  # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   # action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
+  # draw_IG_skeleton(args, replay_buffer, agent)
+
+  # show_phi_weight(args, replay_buffer, agent)
+  # show_last_weight(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete(args, replay_buffer, agent)
+  # action_profile_likelihood_discrete_batch(args, replay_buffer, agent)
   # optimize_action(args, replay_buffer, agent)
   # density_trajectory(args, replay_buffer, agent)
   # optimize_next_state(args, replay_buffer, agent)
@@ -1701,13 +1920,15 @@ if __name__ == "__main__":
   # cluster_in_phi_space(args, replay_buffer, agent)
   # args.times = 3
   # IntegratedGradients_attr(args, replay_buffer, agent)
-  # draw_IG_skeleton(args, replay_buffer, agent)
+  # get_edges()
+  # PCA_IG_skeleton(args, replay_buffer, agent)
   # visualize_wu(args, replay_buffer, agent)
   # action_loglikelihood(args, replay_buffer, agent)
   # action_profile(args, replay_buffer, agent)
   # check_action_space(args, replay_buffer, agent)
-  # rollout(args, replay_buffer, agent, 13)
-  rollout_check_profile(args, replay_buffer, agent, 2)
+  # rollout(args, replay_buffer, agent, 2)
+  # rollout_check_profile(args, replay_buffer, agent, 2)
+
   # rollout_multiple_syllables(args, replay_buffer, agent)
   # action_loglikelihood_multiple_syllables(args, replay_buffer, agent)
 

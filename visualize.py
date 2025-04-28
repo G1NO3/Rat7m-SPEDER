@@ -139,8 +139,8 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
   # sample_idx = 161
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   print('state:', state.shape, 'action:', action.shape)
-  stateseq = torch.zeros((timestep, *state.shape))
-  actionseq = torch.zeros((timestep, *action.shape))
+  stateseq = np.zeros((timestep, *state.shape))
+  actionseq = np.zeros((timestep, *action.shape))
   stateseq[0] = state
   actionseq[0] = action
   print(dataset.task[354:359])
@@ -148,38 +148,37 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
   print('action:', dataset.action[354:359])
   lr = torch.load('./kms/linear_model.pth')
   batch_size = 1
-  bins = 21
   peak_score_ar = np.zeros((timestep, ))
   higher_than_mean_ar = np.zeros((timestep, ))
   higher_than_80quantile_ar = np.zeros((timestep, ))
   action_to_linear_score_ar = np.zeros((timestep, ))
   ap_q_ar = np.zeros((timestep, ))
+  n_action_dim = agent.n_action_dim
+  n_action = agent.n_action
   for i in range(1,timestep):
     print(i, 'action:', action)
     action_pred = torch.FloatTensor(lr.predict(state.detach().cpu().numpy()))
     # action_pred_continuous = torch.FloatTensor(action_pred_continuous)
-
     assert next_state.shape == (batch_size, agent.state_dim)
-    center = (bins-1)//2
-    total_range = 20/scale_factor
-    incremental_matrix = torch.eye(agent.action_dim).reshape(agent.action_dim, 1, agent.action_dim).repeat(1, bins, 1) \
-                      * ((torch.arange(bins) - center) * total_range/(bins-1)).reshape(1, bins, 1)
-    assert incremental_matrix.shape == (agent.action_dim, bins, agent.action_dim)
-    new_action = action.reshape(batch_size, 1, 1, agent.action_dim) + incremental_matrix.reshape(1, agent.action_dim, bins, agent.action_dim)
+    # incremental_matrix = torch.eye(agent.action_dim//agent.n_action).reshape(agent.action_dim//agent.n_action, 1, agent.action_dim//agent.n_action).repeat(1, agent.n_action, 1)
+    # assert incremental_matrix.shape == (n_action_dim, n_action, n_action_dim)
+    new_action = action.reshape(batch_size, 1, 1, n_action_dim).repeat(1, n_action_dim, n_action, 1)
+    for j in range(n_action_dim):
+      new_action[:,j,:,j] = torch.arange(n_action)
+    # new_action_onehot = torch.eye(n_action)[new_action].reshape(batch_size, n_action_dim, n_action, n_action*n_action_dim)
+    state_batch = state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, n_action_dim, n_action, 1)
+    #TODO TODO following
+    task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, n_action_dim, n_action, 1)
+    batch_q = agent.action_loglikelihood(state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
+    print('batch_q:', batch_q.shape)
 
-    next_state = state + action
-    next_state_batch = next_state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, agent.action_dim, bins, 1)
-    # state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
-    task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
-    batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
-    # print('batch_q:', batch_q.shape)
-    assert batch_q.shape == (agent.action_dim, bins)
-    peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action.detach().numpy(), 
-                                                                                                state, action.detach().numpy(), action_pred, i, args.scale_factor)
+    assert batch_q.shape == (n_action_dim, n_action)
+    peak_score, higher_than_mean = draw_profile(agent, batch_q, action.detach(), \
+                                                                                                action_pred, i)
     peak_score_ar[i] = peak_score
     higher_than_mean_ar[i] = higher_than_mean
-    higher_than_80quantile_ar[i] = higher_than_80quantile
-    action_to_linear_score_ar[i] = action_to_linear_score
+    # higher_than_80quantile_ar[i] = higher_than_80quantile
+    # action_to_linear_score_ar[i] = action_to_linear_score
     # state, action, sp_likelihood, ap_q = agent.step(state, action, syllable, temperature=0.1)
     # print('sprime ll:',sp_likelihood, 'q:',ap_q)
     # action = action_pred
@@ -193,8 +192,10 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
     actionseq[i] = action
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/rollout_{syllable}.gif'
   plot_gif(stateseq.squeeze(1), save_path)
+  return peak_score_ar.mean(), higher_than_mean_ar.mean(), higher_than_80quantile_ar.mean(), \
+        action_to_linear_score_ar.mean(), ap_q_ar.mean(), stateseq
 
-def draw_profile(agent, q, state, action, action_pred, timestep):
+def draw_profile(agent, q, action, action_pred, timestep):
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
 
@@ -210,20 +211,22 @@ def draw_profile(agent, q, state, action, action_pred, timestep):
     axes[i].set_title(f'peak {peak_i}')
 
   peak_idx = torch.argmax(q, dim=1)
+  print('peak_idx:', peak_idx, peak_idx.dtype)
+  print('action:', action, action.dtype)
   peak_score = torch.where(peak_idx==action.reshape(-1), 1., 0.).mean()
   higher_than_mean = torch.where(torch.gather(q, 1, action.long().reshape(-1, 1)) - torch.mean(q, dim=1, keepdim=True)>0, 1., 0.).mean()
   # quantile = torch.quantile(all_logll, 0.8, dim=-1)
   # higher_than_80quantile = torch.where(all_logll[:, center] - quantile>0, 1., 0.).mean()
   linear_peak_score = torch.where(action_pred.reshape(-1)==action.reshape(-1), 1., 0.).mean()
-  linear_higher_than_mean = torch.where(torch.gather(q, 1, action_pred.reshape(-1, 1)) - torch.mean(q, dim=1, keepdim=True)>0, 1., 0.).mean()
-  plt.suptitle(f'peak score: {peak_score}, linear ps: {linear_peak_score}\nhigher than mean: {higher_than_mean}, linear htm: {linear_higher_than_mean}', fontsize=20)
+  # linear_higher_than_mean = torch.where(torch.gather(q, 1, action_pred.reshape(-1, 1)) - torch.mean(q, dim=1, keepdim=True)>0, 1., 0.).mean()
+  plt.suptitle(f'peak score: {peak_score}, linear ps: {linear_peak_score}\nhigher than mean: {higher_than_mean}', fontsize=20)
   plt.tight_layout()
   fig_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/profile_ll_action_{timestep}.png'
   if not os.path.exists(os.path.dirname(fig_path)):
     os.makedirs(os.path.dirname(fig_path))
   plt.savefig(fig_path)
   print(fig_path)
-  return peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score
+  return peak_score, higher_than_mean
 
 def plot_gif_all_syllables(state_seqs_all, save_path):
   # state_seqs_all: [syllable, timestep, state_dim]

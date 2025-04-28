@@ -268,6 +268,7 @@ class AutoregressiveDiscreteActor(nn.Module):
 
             if given_actions is None:
                 a_i = dist.sample()                                # [B]
+                # a_i = dist.logits.argmax(dim=-1)                      # [B]
             else:
                 a_i = given_actions[:, i]                          # [B]
 

@@ -369,9 +369,9 @@ class SPEDERSACAgent():
         """
 
         state, action, next_state, reward, _, task, next_task = unpack_batch(batch)
-        # action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
-        # z_phi = self.phi(torch.concat([state, action_onehot], -1))
-        z_phi = self.phi(torch.concat([state, action], -1))
+        action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
+        z_phi = self.phi(torch.concat([state, action_onehot], -1))
+        # z_phi = self.phi(torch.concat([state, action], -1))
 
         # z_phi_random = self.phi(torch.concat([s_random, a_random], -1))
 
@@ -732,7 +732,9 @@ class SPEDERSACAgent():
         q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True) / temperature
         return -q_data
     def discrete_potential(self, state, action, task_onehot, temperature=1.0):
-        action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
+        # print('state', state.shape, 'action', action.shape)
+        action_onehot = torch.eye(self.n_action)[action.long()].reshape(*action.shape[:-1], self.action_dim).to(self.device)
+        # print('action_onehot', action_onehot.shape, 'state', state.shape)
         z_phi = self.phi(torch.concat([state, action_onehot], -1))
         f_phi = self.critic(z_phi)
         z_u = self.u(task_onehot)
@@ -1021,13 +1023,15 @@ class SPEDERSACAgent():
         return loglikelihood, z_phi, z_mu_next
 
     def action_loglikelihood(self, state, action, task):
-        assert action.shape[-1] == self.action_dim
+        print('state:', state.shape, 'action:', action.shape, 'task:', task.shape)
+        assert action.shape[-1] == self.n_action_dim
         # self.phi.eval()
         # self.critic.eval()
         # with torch.no_grad():
             # print('state:', state.shape, 'action:', action.shape, 'task:', task.shape)
             # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task.long()].to(self.device).squeeze(-2)
+        print('state:', state.shape, 'action:', action.shape, 'task_onehot:', task_onehot.shape)
         # print('task_onehot:', task_onehot.shape)
             # state_task = torch.cat([state, task_onehot], -1)
 
@@ -1089,8 +1093,11 @@ class SPEDERSACAgent():
 
     def step(self, state, action, task, temperature, n, step_size):
         # next_state = self.generate_next_state(state, action)
-        next_state = state + action
-        # next_state = self.generate_next_state_discrete_action(state, action)
+        # next_state = state + action
+        print('state:', state)
+        print('action:', action)
+        print('task:', task)
+        next_state = self.generate_next_state_discrete_action(state, action)
         # print(task)
         # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task].to(self.device).reshape(1,-1)
@@ -1105,7 +1112,8 @@ class SPEDERSACAgent():
         # print('dist loc:', next_action_dist.loc)
         # print('dist scale:', next_action_dist.scale)
         # next_action = next_action_dist.loc
-        z_phi = self.phi(torch.concat([state, action], -1))
+        action_onehot = torch.eye(self.n_action)[action.long()].reshape(-1, self.action_dim).to(self.device)
+        z_phi = self.phi(torch.concat([state, action_onehot], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
         # next_z_phi = self.phi(torch.concat([next_state, next_action], -1))

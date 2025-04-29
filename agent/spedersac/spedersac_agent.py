@@ -227,6 +227,12 @@ class SPEDERSACAgent():
             elif 'sac' in directory:
                 print('Using SAC, KL loss')
                 self.critic_step = self.critic_step_arq_sac_continuous
+            elif 'cd' in directory:
+                print('Using cd')
+                self.critic_step = self.critic_step_arq_cd_continuous
+            elif 'ctrl' in directory:
+                print('Using contrastive loss')
+                self.critic_step = self.critic_step_arq_ctrl_continuous
         
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
@@ -518,6 +524,31 @@ class SPEDERSACAgent():
             'loss_critic': loss.item(),
         }
     def critic_step_arq_sac_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        batch_size = expert_state.shape[0]
+        sample_action_1, log_prob = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        sample_action_2, log_prob = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        # print('sample_action', sample_action)
+        assert sample_action_1.shape == expert_action.shape
+        sample_z_phi_1 = self.phi(torch.concat([expert_state, sample_action_1], -1)).detach() # only need gradient in this place
+        sample_f_phi_1 = self.critic(sample_z_phi_1)
+        z_u = self.u(expert_task_onehot)
+        q_1 = torch.sum(sample_f_phi_1 * z_u, dim=-1, keepdim=True)
+        sample_z_phi_2 = self.phi(torch.concat([expert_state, sample_action_2], -1)).detach()
+        sample_f_phi_2 = self.critic(sample_z_phi_2)
+        q_2 = torch.sum(sample_f_phi_2 * z_u, dim=-1, keepdim=True)
+        loss_q = torch.mean(q_1 - q_2)
+        loss_reg = (q_1**2 + q_2**2).mean()
+        loss = loss_q + loss_reg
+    
+    def critic_step_arq_ctrl_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
         ##TODO: Add w to the optimizer
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)
@@ -530,20 +561,71 @@ class SPEDERSACAgent():
         batch_size = expert_state.shape[0]
         sample_action, log_prob = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
         assert sample_action.shape == expert_action.shape
-        z_phi = self.phi(torch.concat([expert_state, sample_action], -1)).detach() # only need gradient in this place
-        f_phi = self.critic(z_phi)
+
+        batch_size = expert_state.shape[0]
+        batch_state = expert_state.reshape(batch_size, 1, self.state_dim)
+        batch_action = sample_action.reshape(1, batch_size, self.action_dim)
+        batch_state_action = torch.concat([batch_state.repeat(1, batch_size, 1), batch_action.repeat(batch_size, 1, 1)], dim=-1)
+        batch_z_phi = self.phi(batch_state_action).detach()
+        batch_f_phi = self.critic(batch_z_phi)
+        batch_task_onehot = expert_task_onehot.reshape(batch_size, 1, self.n_task).repeat(1, batch_size, 1)
+        batch_u = self.u(batch_task_onehot)
+        q_data = torch.sum(batch_f_phi * batch_u, dim=-1, keepdim=False)
+        assert q_data.shape == (batch_size, batch_size)
+        label = torch.eye(batch_size, batch_size).to(self.device)
+        loss_ctrl = torch.nn.CrossEntropyLoss()(q_data, label)
+        loss = loss_ctrl
+        # print('q:', q.mean())
+        # print('loss', loss.item())  
+        # print('u:', z_u)
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        # for name, param in self.u.named_parameters():
+        #     print('name:', name)
+        #     if param.grad is not None:
+        #         print('param grad:', param.grad)
+        self.critic_optimizer.step()
+        return {
+            'loss_q': loss_ctrl.item(),
+            # 'loss_u': loss_u.item(),
+            'loss_critic': loss.item(),
+        }
+    def critic_step_arq_cd_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        # print('task_onehot', task_onehot.shape)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        sample_action, log_prob = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        action_prime = self.MALA_sampling(expert_state, sample_action, expert_task, n=10, step_size=1e-1, temperature=1)
         z_u = self.u(expert_task_onehot)
-        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
-        loss_q = -torch.mean(q) + torch.square(q).mean() * 0.1
-        loss = loss_q
+        z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach()
+        f_phi = self.critic(z_phi)
+        assert f_phi.shape == z_u.shape
+        assert z_u.shape == (expert_state.shape[0], self.feature_dim)
+        q_data = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        z_phi_prime = self.phi(torch.concat([expert_state, action_prime], -1)).detach()
+        f_phi_prime = self.critic(z_phi_prime)
+        q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
+        loss_q = (q_data - q_E).mean()
+        loss_reg = (q_data ** 2 + q_E ** 2).mean()
+        loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()
         return {
+            'loss_CD': loss.item(),
+            'q_data': q_data.mean().item(),
+            'q_E': q_E.mean().item(),
             'loss_q': loss_q.item(),
-            # 'loss_u': loss_u.item(),
-            'loss_critic': loss.item(),
+            'loss_reg': loss_reg.item(),
         }
+
+
     def critic_step_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
         """
         Critic update step
@@ -807,7 +889,6 @@ class SPEDERSACAgent():
 
 
         expert_log_prob = self.actor.log_prob(expert_state_task, expert_action)
-        # print('expert_log_prob:', expert_log_prob.shape)
         negll = -expert_log_prob.mean()
 
         actor_loss = negll
@@ -818,15 +899,6 @@ class SPEDERSACAgent():
         info = {'actor_loss': actor_loss.item(),
                 'negll': negll.item()}
 
-        if self.learnable_temperature:
-            self.log_alpha_optimizer.zero_grad()
-            alpha_loss = (self.alpha * (-sample_log_prob - self.target_entropy).detach()).mean()
-            alpha_loss.backward()
-            self.log_alpha_optimizer.step()
-
-            info['alpha_loss'] = alpha_loss
-            info['alpha'] = self.alpha
-
         return info
 
     def state_dict(self):
@@ -836,7 +908,9 @@ class SPEDERSACAgent():
 				'phi': self.phi.state_dict(),
 				'mu': self.mu.state_dict(),
                 'w': self.w.state_dict(),
-                'critic': self.critic.state_dict(),}
+                'critic': self.critic.state_dict(),
+                'b': self.b.state_dict(),
+                'c': self.c,}
         print('state dict keys:', module_list.keys())
         return module_list
     def load_state_dict(self, state_dict):
@@ -847,7 +921,9 @@ class SPEDERSACAgent():
         self.phi.load_state_dict(state_dict['phi'])
         self.mu.load_state_dict(state_dict['mu'])
         self.w.load_state_dict(state_dict['w'])
-        print('load state dict keys: actor, critic, u, log_alpha, phi, mu, w')
+        self.b.load_state_dict(state_dict['b'])
+        self.c = state_dict['c']
+        print('load state dict keys: actor, critic, u, log_alpha, phi, mu, w, b, c')
         # torch.set_printoptions(threshold=torch.inf)
         # print(list(self.phi.parameters()))
         # self.theta.load_state_dict(state_dict['theta'])
@@ -911,45 +987,14 @@ class SPEDERSACAgent():
 
     def action_loglikelihood(self, state, action, task):
         assert action.shape[-1] == self.action_dim
-        # self.phi.eval()
-        # self.critic.eval()
-        # with torch.no_grad():
-            # print('state:', state.shape, 'action:', action.shape, 'task:', task.shape)
-            # print('task:', task)
         task_onehot = torch.eye(self.n_task)[task.long()].to(self.device).squeeze(-2)
-        # print('task_onehot:', task_onehot.shape)
-            # state_task = torch.cat([state, task_onehot], -1)
-
-            # dist = self.actor(state_task)
-            # print('dist_mean:', dist.loc[0])
-            # print(dist.scale)
-            # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
-        # action_onehot = torch.eye(self.n_action)[action.long()]
-        # action_onehot = action_onehot.reshape(*action_onehot.shape[:-2], -1).to(self.device)  
-        q = -self.potential(state, action, task_onehot).squeeze(-1)
-        # z_phi = self.phi(torch.concat([state, action], -1))
-        # f_phi = self.critic(z_phi)
-            # q = self.critic(torch.cat([z_phi, task_onehot], -1)).squeeze(-1)
-        # q = torch.sum(z_phi * self.u(task_onehot)*self.beta, dim=-1, keepdim=False)
-        # q = torch.sum(z_phi * self.u(task_onehot), dim=-1, keepdim=False)
-        # f_phi = self.critic(z_phi)
-        # z_u = self.u(task_onehot)
-        # z_w = self.w(task_onehot)
-        # q = -torch.sum(f_phi * z_u, dim=-1, keepdim=False)
-
-
-            # u1, u2 = self.critic(task_onehot)
-            # q1 = torch.sum(z_phi * u1, dim=-1, keepdim=True)
-            # q2 = torch.sum(z_phi * u2, dim=-1, keepdim=True)
-            # q = torch.min(q1, q2)
-
-            # s_a_feature = self.rescalse_state(self.rescale_state_back(state) + self.rescale_action_back(action))
-            # q = self.critic(torch.cat([s_a_feature, task_onehot], -1))
-        # state_task = torch.cat([state, task_onehot], -1)
-        # dist = self.actor(state_task)
+        q = -self.potential(state, action, task_onehot)
+        state_task = torch.cat([state, task_onehot], -1)
+        actor_log_prob = self.actor.log_prob(state_task, action)
+        # print('q:', q.shape, 'action_log_prob:', actor_log_prob.shape)
         # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=False)
-        # assert actor_log_prob.shape == q.shape
-        actor_log_prob = q
+        assert actor_log_prob.shape == q.shape
+        # actor_log_prob = q
 
         return actor_log_prob, q
     
@@ -986,18 +1031,9 @@ class SPEDERSACAgent():
         # Actor
         # next_action_dist = self.actor(torch.concat([next_state, task_onehot], -1))
         next_action, log_prob = self.actor(torch.concat([next_state, task_onehot], -1))
-        # print('next_action:', next_action)
-        # print('std:', self.actor.outputs['std'])
-        # print('dist loc:', next_action_dist.loc)
-        # print('dist scale:', next_action_dist.scale)
-        # next_action = next_action_dist.loc
         z_phi = self.phi(torch.concat([state, action], -1))
         mu_next = self.mu(next_state)
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
-        # next_z_phi = self.phi(torch.concat([next_state, next_action], -1))
-        # f_phi = self.critic(next_z_phi)
-        # z_u = self.u(task_onehot)
-        # q = torch.sum(f_phi * z_u, dim=-1, keepdim=False)
         q = -self.potential(next_state, next_action, task_onehot).squeeze(-1)
         return next_state, next_action, sp_likelihood, q
             

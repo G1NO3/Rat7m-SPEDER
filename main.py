@@ -192,7 +192,7 @@ if __name__ == "__main__":
     # else:
     #   print('Finetune Phi')
   if 'actorclone' in args.dir:
-    pretrained_dir_name = args.dir.replace('_actorclone', '')
+    pretrained_dir_name = args.dir.partition('_actorclone')[0]
     pretrained_model_path = f'./model/{args.env}/{args.alg}/{pretrained_dir_name}/{args.seed}/checkpoint_{args.max_timesteps}.pth'
     agent.load_phi_mu(torch.load(pretrained_model_path))
     print(f'Phi Mu loaded from {pretrained_model_path}')

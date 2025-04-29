@@ -221,12 +221,23 @@ class SPEDERSACAgent():
                             hidden_depth=1,
                             bias=True).to(device)
             self.potential = self.continuous_potential
-            self.critic_step = self.critic_step_arq_continuous
+            if 'q_calib' in directory:
+                print('Using Q calibration, MSE loss')
+                self.critic_step = self.critic_step_arq_mse_continuous
+            elif 'sac' in directory:
+                print('Using SAC, KL loss')
+                self.critic_step = self.critic_step_arq_sac_continuous
+        
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
                      hidden_dim=critic_and_actor_hidden_dim,
                      hidden_depth=0).to(device)
+        self.b = MLP(input_dim=self.state_dim+self.n_task,
+                        output_dim=1,
+                        hidden_dim=critic_and_actor_hidden_dim,
+                        hidden_depth=1).to(device)
+        self.c = nn.Parameter(torch.zeros(1).to(device))
         # self.beta = torch.FloatTensor([1]).to(device)
         # self.beta.requires_grad = True
         self.actor_optimizer = torch.optim.Adam(list(self.actor.parameters()),
@@ -234,7 +245,8 @@ class SPEDERSACAgent():
                                                 betas=[0.9, 0.999])  # lower lr for actor/alpha
         self.log_alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=critic_and_actor_lr, betas=[0.9, 0.999])
 
-        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters()),
+        self.critic_optimizer = torch.optim.Adam(list(self.critic.parameters())+list(self.u.parameters())+list(self.w.parameters())
+                                                 +list(self.b.parameters())+[self.c],
                                                     weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
         # self.u_optimizer = torch.optim.Adam(list(self.u.parameters())+list(self.w.parameters()),
         #                                          weight_decay=0, lr=critic_and_actor_lr, betas=[0.9, 0.999])
@@ -464,7 +476,7 @@ class SPEDERSACAgent():
             'loss_critic_discrete': loss_critic_discrete.item(),
         }
     
-    def critic_step_arq_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
+    def critic_step_arq_mse_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
         ##TODO: Add w to the optimizer
         expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
         # print('expert_task', expert_task)
@@ -482,25 +494,54 @@ class SPEDERSACAgent():
         z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach() # only need gradient in this place
         f_phi = self.critic(z_phi)
         z_u = self.u(expert_task_onehot)
-        z_w = self.w(expert_task_onehot)
+        # z_w = self.w(expert_task_onehot)
         q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
-
-        loss_q = torch.nn.MSELoss()(actor_q, q)
-        r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
-        V = self.get_targetV(expert_state, expert_task_onehot)
-        assert V.shape == (batch_size, 1)
-        q_target = r + V * self.discount * (1 - expert_done)
+        z_b = self.b(torch.concat([expert_state, expert_task_onehot], -1))
+        assert z_b.shape == q.shape == (expert_state.shape[0], 1)
+        q_calib = q + z_b + self.c
+        loss_q = torch.nn.MSELoss()(actor_q, q_calib)
+        # r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
+        # V = self.get_targetV(expert_state, expert_task_onehot)
+        # assert V.shape == (batch_size, 1)
+        # q_target = r + V * self.discount * (1 - expert_done)
         # print('u_target', u_target.shape, 'z_w', z_w.shape, 'z_mu', z_mu.shape, 'V', V.shape, 'u1', u1.shape, 'u2', u2.shape)
         # assert u1.shape == u_target.shape
         # assert u2.shape == u_target.shape
-        loss_u = torch.nn.MSELoss()(q_target, q)
-        loss = loss_q + loss_u
+        # loss_u = torch.nn.MSELoss()(q_target, q)
+        loss = loss_q
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()
         return {
             'loss_q': loss_q.item(),
-            'loss_u': loss_u.item(),
+            # 'loss_u': loss_u.item(),
+            'loss_critic': loss.item(),
+        }
+    def critic_step_arq_sac_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
+        ##TODO: Add w to the optimizer
+        expert_state, expert_action, expert_next_state, expert_reward, expert_done, expert_task, expert_next_task = unpack_batch(batch)
+        # print('expert_task', expert_task)
+        assert expert_state.shape[-1] == self.state_dim
+        assert expert_action.shape[-1] == self.action_dim
+        assert expert_next_state.shape[-1] == self.state_dim
+        assert expert_done.shape[-1] == 1
+        expert_task_onehot = torch.eye(self.n_task)[expert_task.long().squeeze(-1)].to(self.device)
+        assert expert_task_onehot.shape == (expert_state.shape[0], self.n_task)
+        batch_size = expert_state.shape[0]
+        sample_action, log_prob = self.actor(torch.cat([expert_state, expert_task_onehot], -1))
+        assert sample_action.shape == expert_action.shape
+        z_phi = self.phi(torch.concat([expert_state, sample_action], -1)).detach() # only need gradient in this place
+        f_phi = self.critic(z_phi)
+        z_u = self.u(expert_task_onehot)
+        q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        loss_q = -torch.mean(q) + torch.square(q).mean() * 0.1
+        loss = loss_q
+        self.critic_optimizer.zero_grad()
+        loss.backward()
+        self.critic_optimizer.step()
+        return {
+            'loss_q': loss_q.item(),
+            # 'loss_u': loss_u.item(),
             'loss_critic': loss.item(),
         }
     def critic_step_continuous(self, batch, s_random, a_random, s_prime_random, task_random):

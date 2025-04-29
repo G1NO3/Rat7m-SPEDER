@@ -26,7 +26,8 @@ from captum.attr import IntegratedGradients
 from captum.attr import Saliency
 from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
-
+from torch.nn import functional as F
+from sklearn.linear_model import LinearRegression, Lasso, Ridge
 def action_loglikelihood_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     action_loglikelihood_single_syllable(args, dataset, agent, i)
@@ -63,6 +64,59 @@ def action_loglikelihood_single_syllable(args, dataset, agent, syllable, times=1
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
   print(save_path)
+
+def collect_log_prob_lr_all(args, dataset, agent):
+  u_all = np.zeros((agent.n_task, agent.feature_dim))
+  fig, ax = plt.subplots(4,3, figsize=(20,20))
+  ax = ax.flatten()
+  for i in range(agent.n_task):
+    u_all[i], plot_Q, pred_Q = collect_log_prob_lr(args, dataset, agent, i)
+    ax[i].plot(plot_Q, label='log_prob')  
+    ax[i].plot(pred_Q, label='pred_Q')
+    ax[i].set_title(f'syllable {i}')
+    ax[i].legend()
+  plt.suptitle('log_prob vs pred_Q')
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/log_prob_lr.png'
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  fig, ax = plt.subplots(1,1, figsize=(10,10))
+  for i in range(agent.n_task):
+    ax.plot(u_all[i], label=f'{i}')
+  ax.set_title('u')
+  ax.legend()
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u.png'  
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+
+def collect_log_prob_lr(args, dataset, agent, syllable):
+  all_idx = np.where(dataset.task == syllable)[0]
+  print('syllable:', syllable, 'all_idx:', len(all_idx))
+  state_all = torch.FloatTensor(dataset.state[all_idx])
+  task_all = torch.FloatTensor(dataset.task[all_idx])
+  action_all = torch.FloatTensor(dataset.action[all_idx])
+  n_sample = 10000
+  z_phi_all = agent.phi(torch.concat((state_all, action_all), dim=-1))[:n_sample]
+  task_onehot = F.one_hot(task_all.reshape(-1).long(), num_classes=agent.n_task).float()
+  log_prob_all = agent.actor.log_prob(torch.concat((state_all, task_onehot), dim=-1), action_all)[:n_sample]
+  print('log_prob:', log_prob_all[:5])
+  print('z_phi_all:', z_phi_all.shape, 'log_prob_all:', log_prob_all.shape)
+  lr = Ridge(alpha=1e-3, fit_intercept=True)
+
+  lr.fit(z_phi_all.detach().cpu().numpy(), log_prob_all.detach().cpu().numpy())
+  n_plot = 100
+  plot_Q = log_prob_all.detach().cpu().numpy()[:n_plot]
+  pred_Q = lr.predict(z_phi_all.detach().cpu().numpy()[:n_plot])
+  error = np.mean(np.abs(log_prob_all.detach().cpu().numpy() - lr.predict(z_phi_all.detach().cpu().numpy())))
+  u = lr.coef_.flatten()
+  print('lr coef:', u)
+  print('lr error:', error)
+  return u, plot_Q, pred_Q
+
+
 
 def rollout_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
@@ -1877,8 +1931,9 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
-  show_uw(args, replay_buffer, agent)
-  rollout_check_profile_all(args, replay_buffer, agent)
+  collect_log_prob_lr_all(args, replay_buffer, agent)
+  # show_uw(args, replay_buffer, agent)
+  # rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)

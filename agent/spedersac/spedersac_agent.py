@@ -230,6 +230,7 @@ class SPEDERSACAgent():
             elif 'cd' in directory:
                 print('Using cd')
                 self.critic_step = self.critic_step_arq_cd_continuous
+                self.potential = self.Yilun_potential
             elif 'ctrl' in directory:
                 print('Using contrastive loss')
                 self.critic_step = self.critic_step_arq_ctrl_continuous
@@ -923,6 +924,7 @@ class SPEDERSACAgent():
         self.w.load_state_dict(state_dict['w'])
         self.b.load_state_dict(state_dict['b'])
         self.c = state_dict['c']
+        print('c:', self.c)
         print('load state dict keys: actor, critic, u, log_alpha, phi, mu, w, b, c')
         # torch.set_printoptions(threshold=torch.inf)
         # print(list(self.phi.parameters()))

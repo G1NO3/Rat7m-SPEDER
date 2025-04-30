@@ -224,7 +224,7 @@ def rollout_check_profile(args, dataset, agent, syllable, timestep, temperature,
     next_state_batch = next_state.reshape(batch_size, 1, 1, agent.state_dim).repeat(1, agent.action_dim, bins, 1)
     # state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
     task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
-    batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0)
+    batch_q = agent.action_loglikelihood(next_state_batch, new_action, task_batch)[1].detach().cpu().squeeze(0).squeeze(-1)
     # print('batch_q:', batch_q.shape)
     assert batch_q.shape == (agent.action_dim, bins)
     peak_score, higher_than_mean, higher_than_80quantile, action_to_linear_score = draw_profile(agent, batch_q, new_action.detach().numpy(), 
@@ -1324,7 +1324,7 @@ def action_profile_likelihood_batch(args, dataset, agent):
     new_action = action.reshape(batch_size, 1, 1, agent.action_dim) + incremental_matrix.reshape(1, agent.action_dim, bins, agent.action_dim)
     state_batch = state.reshape(batch_size, 1, 1, action_dim).repeat(1, agent.action_dim, bins, 1)
     task_batch = task.reshape(batch_size, 1, 1, 1).repeat(1, agent.action_dim, bins, 1)
-    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[1].detach().cpu()
+    logll = agent.action_loglikelihood(state_batch, new_action, task_batch)[1].detach().cpu().squeeze(-1)
     print('logll:', logll.shape)
     assert logll.shape == (batch_size, agent.action_dim, bins)
     peak_idx = torch.argmax(logll, dim=-1)
@@ -1339,7 +1339,7 @@ def action_profile_likelihood_batch(args, dataset, agent):
     action_pred = linear_model.predict(state.detach().cpu().numpy())
     action_pred = torch.FloatTensor(action_pred)
     assert action_pred.shape == action.shape
-    linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[1].detach().cpu()
+    linear_model_logll = agent.action_loglikelihood(state, action_pred, task)[1].detach().cpu().squeeze(-1)
     # print('linear model logll:', linear_model_logll.shape, 'logll:', logll.shape, 'quantile:', quantile.shape)
     assert linear_model_logll.shape == (batch_size, )
     # print('linear model logll:', linear_model_logll)
@@ -1756,11 +1756,11 @@ def show_uw(args, dataset, agent):
   for name, param in agent.u.named_parameters():
     print(name, param)
   params = dict(agent.u.named_parameters())
-  if 'ctrl' in args.dir:
-    weight = params['l1.weight'].detach().cpu().numpy()
+  # if 'ctrl' in args.dir:
+    # weight = params['l1.weight'].detach().cpu().numpy()
     # bias = params['l2.bias'].detach().cpu().numpy()
-  elif 'Yilun' in args.dir:
-    weight = params['trunk.0.weight'].detach().cpu().numpy()
+  # elif 'Yilun' in args.dir:
+    # weight = params['trunk.0.weight'].detach().cpu().numpy()
     # bias = params['trunk.0.bias'].detach().cpu().numpy()
   # print('weight:', weight.shape)
   # bias = params['trunk.0.bias'].detach().cpu().numpy()  
@@ -1929,16 +1929,16 @@ if __name__ == "__main__":
   # agent.load_phi_mu(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
-  # print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
+  print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
   # collect_log_prob_lr_all(args, replay_buffer, agent)
   show_uw(args, replay_buffer, agent)
-  # rollout_check_profile_all(args, replay_buffer, agent)
+  rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)
   # action_profile_likelihood_batch(args, replay_buffer, agent)
-  action_test_logll(args, replay_buffer, agent)
+  # action_test_logll(args, replay_buffer, agent)
   # test_logll_smoothly(args, replay_buffer, agent)
   # posll, posstd, negll, negstd = test_logll(args, replay_buffer, agent)
   # draw_IG_skeleton(args, replay_buffer, agent)

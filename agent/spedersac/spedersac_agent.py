@@ -130,7 +130,7 @@ class SPEDERSACAgent():
         # assert torch.isclose(self.phi.l1.weight, self.mu.l1.weight).all()
         # assert torch.isclose(self.phi.l1.bias, self.mu.l1.bias).all()
         # self.theta = Theta(feature_dim=feature_dim).to(device)
-
+        
         self.feature_optimizer = torch.optim.Adam(
             list(self.phi.parameters()) + list(self.mu.parameters()),
             weight_decay=0, lr=phi_and_mu_lr)
@@ -183,6 +183,7 @@ class SPEDERSACAgent():
         #                   output_dim=feature_dim,
         #                   hidden_dim=critic_and_actor_hidden_dim,
         #                   hidden_depth=1).to(device)
+        self.action_loglikelihood = self.action_loglikelihood_normal
         if 'Yilun' in directory:
             print('Using Yilun potential')
             self.u = MLP(input_dim=n_task,
@@ -224,6 +225,7 @@ class SPEDERSACAgent():
             if 'q_calib' in directory:
                 print('Using Q calibration, MSE loss')
                 self.critic_step = self.critic_step_arq_mse_continuous
+                self.action_loglikelihood = self.action_loglikelihood_calib
             elif 'sac' in directory:
                 print('Using SAC, KL loss')
                 self.critic_step = self.critic_step_arq_sac_continuous
@@ -987,19 +989,26 @@ class SPEDERSACAgent():
             loglikelihood = (torch.sum(z_phi*z_mu_next, dim=-1))
         return loglikelihood, z_phi, z_mu_next
 
-    def action_loglikelihood(self, state, action, task):
+    def action_loglikelihood_normal(self, state, action, task):
         assert action.shape[-1] == self.action_dim
         task_onehot = torch.eye(self.n_task)[task.long()].to(self.device).squeeze(-2)
         q = -self.potential(state, action, task_onehot)
         state_task = torch.cat([state, task_onehot], -1)
         actor_log_prob = self.actor.log_prob(state_task, action)
-        # print('q:', q.shape, 'action_log_prob:', actor_log_prob.shape)
-        # actor_log_prob = dist.log_prob(action).sum(-1, keepdim=False)
         assert actor_log_prob.shape == q.shape
-        # actor_log_prob = q
-
         return actor_log_prob, q
-    
+    def action_loglikelihood_calib(self, state, action, task):
+        assert action.shape[-1] == self.action_dim
+        task_onehot = torch.eye(self.n_task)[task.long()].to(self.device).squeeze(-2)
+        q = -self.potential(state, action, task_onehot)
+        state_task = torch.cat([state, task_onehot], -1)
+        z_b = self.b(state_task)
+        print('z_b:', z_b, 'c:', self.c)
+        q_calib = q + z_b + self.c.to(self.device)
+        q = q_calib
+        actor_log_prob = self.actor.log_prob(state_task, action)
+        assert actor_log_prob.shape == q.shape
+        return actor_log_prob, q
     def generate_next_state(self, state, action):
         state_max, state_min = self.normalize_dict['state_max'], self.normalize_dict['state_min']
         action_max, action_min = self.normalize_dict['action_max'], self.normalize_dict['action_min']

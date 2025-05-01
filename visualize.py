@@ -28,6 +28,213 @@ from captum.attr import DeepLift
 from captum.attr import NoiseTunnel
 from torch.nn import functional as F
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
+
+def save_fig(path):
+  if not os.path.exists(os.path.dirname(path)):
+    os.makedirs(os.path.dirname(path))
+  plt.savefig(path)
+  print(path)
+
+def show_state_action_field(state_seq, action_seq, save_path):
+  # state_seqs_all: [syllable, state_dim]
+  # action_seqs_all: [syllable, action_dim]
+  edges, state_name, n_dim = get_edges(state_seq.shape[-1])
+  fig, axis = plt.subplots(3, 4, figsize=(20, 15))
+  n_bodyparts = len(state_name)
+  n_sample = state_seq.shape[0]
+  
+  state_to_plot = state_seq.reshape(n_sample, -1, 2)
+  state_to_plot -= state_to_plot.mean(axis=1, keepdims=True)
+  _, eigenval, vhs = np.linalg.svd(state_to_plot)
+  head_idx = state_name.index('head')
+  n_bodyparts = len(state_name)
+  pc1 = vhs[:,0,:] # [batch, 2, 2]
+  head_vector = state_to_plot[:, head_idx, :]
+  flip_sign1 = np.where(np.sum(head_vector*pc1, axis=-1, keepdims=True) < 0, -1, 1)
+  leftear_index = state_name.index('left ear')
+  pc2 = vhs[:,1,:]
+  leftear_vector = state_to_plot[:, leftear_index, :]
+  flip_sign2 = np.where(np.sum(leftear_vector*pc2, axis=-1, keepdims=True) < 0, -1, 1)
+  pc1 = pc1 * flip_sign1
+  pc2 = pc2 * flip_sign2
+  vs_calib = np.stack([pc1, pc2], axis=-1)
+  assert vs_calib.shape == (n_sample, 2, 2)
+  scale_factor = eigenval[:,0].reshape(n_sample, 1, 1)
+  rotating_s = np.matmul(state_to_plot, vs_calib)
+  rotating_a = np.matmul(action_seq.reshape(n_sample, -1, 2), vs_calib)
+  s_all = rotating_s.reshape(n_sample, agent.state_dim)
+  a_all = rotating_a.reshape(n_sample, agent.action_dim)
+
+  n_syllable = 10
+  state_seqs_to_plot = s_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
+  action_seqs_to_plot = a_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  axmin = -0.3
+  axmax = 0.3
+  aymin = -0.3
+  aymax = 0.3
+  for j in range(n_syllable):
+    for p1, p2 in edges:
+      axis[j//4, j%4].plot(
+          *state_seqs_to_plot[j, (p1, p2)].T,
+          color=keypoint_colors[p1],
+          linewidth=5.0, zorder=0)
+    axis[j//4, j%4].scatter(
+        *state_seqs_to_plot[j].T,
+        c=keypoint_colors,
+        s=100, zorder=0)
+    axis[j//4, j%4].set_title(f'{j}', fontsize=30)
+    axis[j//4, j%4].axis('off')
+    axis[j//4, j%4].set_xlim(axmin, axmax)
+    axis[j//4, j%4].set_ylim(aymin, aymax)
+    for k in range(n_bodyparts):
+      axis[j//4, j%4].quiver(state_seqs_to_plot[j, k, 0], state_seqs_to_plot[j, k, 1], 
+                            action_seqs_to_plot[j, k, 0], action_seqs_to_plot[j, k, 1], 
+                            angles='xy', scale_units='xy', scale=0.2, color='r', zorder=1)
+  average_state = s_all.mean(axis=0).reshape(n_bodyparts, 2)
+  average_action = a_all.mean(axis=0).reshape(n_bodyparts, 2)
+  j += 1
+  # draw multiple state and action in one figure
+  for p1, p2 in edges:
+    axis[j//4, j%4].plot(
+        *average_state[(p1, p2),:].T,
+        color=keypoint_colors[p1],
+        linewidth=5.0, zorder=0)
+  axis[j//4, j%4].scatter(
+      *average_state.T,
+      c=keypoint_colors,
+      s=100, zorder=0)
+  axis[j//4, j%4].set_title(f'average', fontsize=30)
+  axis[j//4, j%4].axis('off')
+  axis[j//4, j%4].set_xlim(axmin, axmax)
+  axis[j//4, j%4].set_ylim(aymin, aymax)
+  for k in range(n_bodyparts):
+    axis[j//4, j%4].quiver(average_state[k, 0], average_state[k, 1], 
+                          average_action[k, 0], average_action[k, 1], 
+                          angles='xy', scale_units='xy', scale=0.07, color='r', zorder=1)
+  j += 1
+  alpha = 0.01
+  for l in range(n_sample):
+    for p1, p2 in edges:
+      axis[j//4, j%4].plot(
+          *rotating_s[l, (p1, p2)].T,
+          color=keypoint_colors[p1],
+          linewidth=5.0, alpha=alpha)
+    axis[j//4, j%4].scatter(
+        *rotating_s[l].T,
+        c=keypoint_colors,
+        s=100, alpha=alpha)
+    # axis[j//4, j%4].set_title(f'{l}', fontsize=30)
+    axis[j//4, j%4].axis('off')
+    axis[j//4, j%4].set_xlim(axmin, axmax)
+    axis[j//4, j%4].set_ylim(aymin, aymax)
+    for k in range(n_bodyparts):
+      axis[j//4, j%4].quiver(rotating_s[l, k, 0], rotating_s[l, k, 1], 
+                            rotating_a[l, k, 0], rotating_a[l, k, 1], 
+                            angles='xy', scale_units='xy', scale=0.2, color='r', alpha=alpha*5)
+  plt.suptitle('state and action field')
+  plt.tight_layout()
+  if not os.path.exists(os.path.dirname(save_path)):
+    os.makedirs(os.path.dirname(save_path))
+  plt.savefig(save_path)
+  print(save_path)
+  plot_a_distribution(rotating_a, save_path.replace('.png', '_a_distribution.png'), state_name)
+
+  next_s_all = s_all + a_all
+  plot_next_s_all(next_s_all, save_path.replace('.png', '_next_s.png'))
+
+def plot_next_s_all(next_s_all, save_path):
+  # next_s_all: [n_sample, n_bodyparts*2]
+  n_sample = next_s_all.shape[0]
+  edges, state_name, n_dim = get_edges(next_s_all.shape[-1])
+  next_s_to_plot = next_s_all.reshape(n_sample, -1, 2)
+  fig, axis = plt.subplots(1,1, figsize=(5, 6))
+  n_bodyparts = len(state_name)
+  
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  axmin = -0.3
+  axmax = 0.3
+  aymin = -0.3
+  aymax = 0.3
+  alpha = 0.01
+  for l in range(n_sample):
+    for p1, p2 in edges:
+      axis.plot(
+          *next_s_to_plot[l, (p1, p2)].T,
+          color=keypoint_colors[p1],
+          linewidth=5.0, alpha=alpha)
+    axis.scatter(
+        *next_s_to_plot[l].T,
+        c=keypoint_colors,
+        s=100, alpha=alpha)
+    axis.axis('off')
+    axis.set_xlim(axmin, axmax)
+    axis.set_ylim(aymin, aymax)
+  plt.suptitle('state and action field')
+  plt.tight_layout()
+  save_fig(save_path)
+def plot_a_distribution(rotating_a, save_path, state_name):
+  # rotating_a: [n_sample, n_bodyparts, 2]
+  fig, ax = plt.subplots(2,4, figsize=(20, 10))
+  ax = ax.flatten()
+  n_bodyparts = rotating_a.shape[1]
+  for i in range(n_bodyparts):
+    ax[i].scatter(rotating_a[:, i, 0], rotating_a[:, i, 1], s=1)
+    ax[i].set_title(f'{state_name[i]}')
+    ax[i].set_xlim(-0.04, 0.04)
+    ax[i].set_ylim(-0.04, 0.04)
+  save_fig(save_path)
+
+def optimize_action_to_phi(args, dataset, agent, dimension):
+  n_sample = 1000
+  n_iter = 1000
+  step_size = 1e-4
+  # sample_idx = all_idx[np.random.randint(0, len(all_idx), n_sample)]
+  sample_idx = np.random.randint(0, dataset.size, n_sample)
+  state, initial_action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  print('state:', state.shape)
+
+  action = initial_action.clone().detach().requires_grad_()
+  optimizer = torch.optim.Adam([action], lr=step_size)
+  for j in range(n_iter):
+    z_phi = agent.phi(torch.concat([state, action], -1))
+    # print(z_phi)
+    optimizer.zero_grad()
+    loss = -z_phi[:,dimension].sum()
+    loss.backward()
+    optimizer.step()
+  # print(f'action {t}:', action)
+  state_seq = state.clone().detach().numpy()
+  action_seq = action.clone().detach().numpy()
+  show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
+  return 
+
+def optimize_action_to_phi_all(args, dataset, agent):
+  for i in range(agent.feature_dim):
+    optimize_action_to_phi(args, dataset, agent, i) 
+
+def collect_action_to_phi(args, dataset, agent, dimension):
+  n_sample = 20000
+  # sample_idx = all_idx[np.random.randint(0, len(all_idx), n_sample)]
+  sample_idx = np.random.randint(0, dataset.size, n_sample)
+  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  z_phi = agent.phi(torch.concat([state, action], -1)).detach().numpy()
+  take_idx = np.argsort(z_phi[:,dimension])[:n_sample//50]
+  state_seq = state[take_idx].clone().detach().numpy()
+  action_seq = action[take_idx].clone().detach().numpy()
+  fig, ax = plt.subplots(1,1, figsize=(10,10))
+  ax.hist(z_phi[:,dimension], bins=20, alpha=0.6, density=True, color='orange')
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/phi/{dimension}.png')
+  print('state_seq:', state_seq.shape, 'action_seq:', action_seq.shape)
+  show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
+  return state_seq, action_seq
+
+def collect_action_to_phi_all(args, dataset, agent):
+  for i in range(agent.feature_dim):
+    collect_action_to_phi(args, dataset, agent, i)
+
 def action_loglikelihood_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
     action_loglikelihood_single_syllable(args, dataset, agent, i)
@@ -1249,10 +1456,10 @@ def action_profile_likelihood(args, dataset, agent):
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
-  bins = 31
+  bins = 21
   all_logll = torch.zeros(agent.action_dim, bins)
   show_idx = 0
-  total_range = 100/scale_factor
+  total_range = 20/scale_factor
   center = (bins-1)//2
   lr = torch.load('./kms/linear_model.pth')
   action_pred = lr.predict(state.detach().cpu().numpy())
@@ -1774,19 +1981,19 @@ def show_uw(args, dataset, agent):
     os.makedirs(save_dir_path)
   fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
-  for i in range(agent.n_task):
+  for i in [2,4,8]:
     # predicted_ui = weight[:,i] + bias
     # axes[0].plot(predicted_ui, label=i)
-    axes[0].plot(u[i], label=i)
+    axes[0].plot(-u[i], label=i)
     large_idx = np.argsort(np.abs(u[i]))[::-1]
-    print('large idx:', large_idx[:5])
-    print('large value:', u[i][large_idx[:5]])
-    print(i, 'u:', u[i, 74])
+    print('large idx:', large_idx[:20])
+    print('large value:', u[i][large_idx[:20]])
+    # print(i, 'u:', u[i, 74])
     # axes[1].plot(weight[:,i], label=i)
     # axes[1].plot(w[i], label=i)
     # print('u:', u[i], 'w:', w[i])
   # axes[2].plot(bias, label='bias')
-  axes[0].set_title('u')
+  axes[0].set_title(f'u, large idx: {large_idx[:10]}')
   # axes[1].set_title('w')
   axes[0].legend()
   axes[1].legend()
@@ -1932,8 +2139,10 @@ if __name__ == "__main__":
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
   # collect_log_prob_lr_all(args, replay_buffer, agent)
+  # collect_action_to_phi_all(args, replay_buffer, agent)
+  # optimize_action_to_phi_all(args, replay_buffer, agent)
   show_uw(args, replay_buffer, agent)
-  rollout_check_profile_all(args, replay_buffer, agent)
+  # rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)
   # action_profile_likelihood(args, replay_buffer, agent)

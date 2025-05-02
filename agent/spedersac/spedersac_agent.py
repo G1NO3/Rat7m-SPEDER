@@ -209,7 +209,7 @@ class SPEDERSACAgent():
                                 bias=True).to(device)
             self.potential = self.continuous_potential
             self.critic_step = self.critic_step_continuous
-        elif 'actorclone' in directory:
+        else:
             print('Using actor clone potential')
             self.u = MLP(input_dim=self.n_task,
                 output_dim=feature_dim,
@@ -958,13 +958,12 @@ class SPEDERSACAgent():
         s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
         # s_prime_random = self.obs_dict.sample((batch_size, )).to(self.device)
         feature_info, critic_info, actor_info = None, None, None
-
-        # feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
+        feature_info = self.feature_step(batch_1, s_random, a_random, s_prime_random)
 
         critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
 
         # Actor and alpha step, make the actor closer to softmaxQ
-        # actor_info = self.update_actor_and_alpha(batch_1)
+        actor_info = self.update_actor_and_alpha(batch_1)
 
         # Update the frozen target models
         self.update_target()

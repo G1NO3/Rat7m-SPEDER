@@ -142,7 +142,7 @@ def show_state_action_field(state_seq, action_seq, save_path):
   plot_a_distribution(rotating_a, save_path.replace('.png', '_a_distribution.png'), state_name)
 
   next_s_all = s_all + a_all
-  plot_next_s_all(next_s_all, save_path.replace('.png', '_next_s.png'))
+  # plot_next_s_all(next_s_all, save_path.replace('.png', '_next_s.png'))
 
 def plot_next_s_all(next_s_all, save_path):
   # next_s_all: [n_sample, n_bodyparts*2]
@@ -199,10 +199,10 @@ def optimize_action_to_phi(args, dataset, agent, dimension):
   action = initial_action.clone().detach().requires_grad_()
   optimizer = torch.optim.Adam([action], lr=step_size)
   for j in range(n_iter):
-    z_phi = agent.phi(torch.concat([state, action], -1))
+    f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
     # print(z_phi)
     optimizer.zero_grad()
-    loss = -z_phi[:,dimension].sum()
+    loss = -f_phi[:,dimension].sum()
     loss.backward()
     optimizer.step()
   # print(f'action {t}:', action)
@@ -216,17 +216,18 @@ def optimize_action_to_phi_all(args, dataset, agent):
     optimize_action_to_phi(args, dataset, agent, i) 
 
 def collect_action_to_phi(args, dataset, agent, dimension):
-  n_sample = 20000
+  n_sample = 5000
   # sample_idx = all_idx[np.random.randint(0, len(all_idx), n_sample)]
   sample_idx = np.random.randint(0, dataset.size, n_sample)
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
-  z_phi = agent.phi(torch.concat([state, action], -1)).detach().numpy()
-  take_idx = np.argsort(z_phi[:,dimension])[:n_sample//50]
+  z_phi = agent.phi(torch.concat([state, action], -1))
+  f_phi = agent.critic(z_phi).detach().numpy()
+  take_idx = np.argsort(f_phi[:,dimension])[:n_sample//20]
   state_seq = state[take_idx].clone().detach().numpy()
   action_seq = action[take_idx].clone().detach().numpy()
-  fig, ax = plt.subplots(1,1, figsize=(10,10))
-  ax.hist(z_phi[:,dimension], bins=20, alpha=0.6, density=True, color='orange')
-  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/phi/{dimension}.png')
+  # fig, ax = plt.subplots(1,1, figsize=(10,10))
+  # ax.hist(z_phi[:,dimension], bins=20, alpha=0.6, density=True, color='orange')
+  # save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/phi/{dimension}.png')
   print('state_seq:', state_seq.shape, 'action_seq:', action_seq.shape)
   show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
   return state_seq, action_seq
@@ -1981,16 +1982,16 @@ def show_uw(args, dataset, agent):
     os.makedirs(save_dir_path)
   fig, axes = plt.subplots(3,1, figsize=(15,15))
   # fig.colorbar(axes.imshow(u, cmap='hot', interpolation='nearest'))
-  for i in [2,4,8]:
+  for i in [2,4]:
     # predicted_ui = weight[:,i] + bias
     # axes[0].plot(predicted_ui, label=i)
-    axes[0].plot(-u[i], label=i)
+    axes[0].plot(u[i], label=i)
     large_idx = np.argsort(np.abs(u[i]))[::-1]
     print('large idx:', large_idx[:20])
     print('large value:', u[i][large_idx[:20]])
     # print(i, 'u:', u[i, 74])
     # axes[1].plot(weight[:,i], label=i)
-    # axes[1].plot(w[i], label=i)
+    axes[1].plot(w[i], label=i)
     # print('u:', u[i], 'w:', w[i])
   # axes[2].plot(bias, label='bias')
   axes[0].set_title(f'u, large idx: {large_idx[:10]}')

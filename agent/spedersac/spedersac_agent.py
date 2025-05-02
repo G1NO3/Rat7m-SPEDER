@@ -517,12 +517,14 @@ class SPEDERSACAgent():
         # assert u1.shape == u_target.shape
         # assert u2.shape == u_target.shape
         # loss_u = torch.nn.MSELoss()(q_target, q)
-        loss = loss_q
+        loss_reg = z_u.abs().mean() * 0.1
+        loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()
         self.critic_optimizer.step()
         return {
             'loss_q': loss_q.item(),
+            'loss_reg': loss_reg.item(),
             # 'loss_u': loss_u.item(),
             'loss_critic': loss.item(),
         }
@@ -577,7 +579,8 @@ class SPEDERSACAgent():
         assert q_data.shape == (batch_size, batch_size)
         label = torch.eye(batch_size, batch_size).to(self.device)
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_data, label)
-        loss = loss_ctrl
+        loss_reg = (q_data ** 2).mean() * 0.1 + batch_u.abs().mean() * 0.1
+        loss = loss_ctrl + loss_reg
         # print('q:', q.mean())
         # print('loss', loss.item())  
         # print('u:', z_u)
@@ -590,6 +593,7 @@ class SPEDERSACAgent():
         self.critic_optimizer.step()
         return {
             'loss_q': loss_ctrl.item(),
+            'loss_reg': loss_reg.item(),
             # 'loss_u': loss_u.item(),
             'loss_critic': loss.item(),
         }
@@ -615,7 +619,7 @@ class SPEDERSACAgent():
         f_phi_prime = self.critic(z_phi_prime)
         q_E = torch.sum(f_phi_prime * z_u, dim=-1, keepdim=True)
         loss_q = (q_data - q_E).mean()
-        loss_reg = (q_data ** 2 + q_E ** 2).mean()
+        loss_reg = (q_data ** 2 + q_E ** 2).mean() * 0.1 + z_u.abs().mean() * 0.1
         loss = loss_q + loss_reg
         self.critic_optimizer.zero_grad()
         loss.backward()

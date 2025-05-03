@@ -29,11 +29,40 @@ from captum.attr import NoiseTunnel
 from torch.nn import functional as F
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 
+def assigned_action_to_phi(args, dataset, agent):
+  state_dim = 16
+  action_dim = 16
+  n_task = 10
+  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, 'cpu')
+  replay_buffer_path = f'./kms/test_data_24.pth'
+  replay_buffer.load_state_dict(torch.load(replay_buffer_path))
+  all_idx = np.where(replay_buffer.task == 2)[0]
+  sample_idx = all_idx[np.random.randint(0, len(all_idx), 100)]
+  sample_idx = np.array([6514, 5467,  4947,  5428,  7586, 13119, 11209, 12561, 2036, 10781])
+  # sample_idx = np.array([17387, 67040])
+  # sample_idx = np.random.randint(0, dataset.size, n_sample)
+  state, action, next_state, reward, done, task, next_task = unpack_batch(replay_buffer.take(sample_idx))
+  print('state:', state.shape)
+  f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
+  fig, ax = plt.subplots(1,1, figsize=(10,5))
+  ax.plot(f_phi.mean(0).detach().cpu().numpy(), label='right')
+  all_idx = np.where(replay_buffer.task == 4)[0]
+  sample_idx = all_idx[np.random.randint(0, len(all_idx), 100)]
+  sample_idx = np.array([ 7591,  9753,  7507, 12315,  1790,  8621,  4739,  2836,  9721,  3280])
+  state, action, next_state, reward, done, task, next_task = unpack_batch(replay_buffer.take(sample_idx))
+  f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
+  ax.plot(f_phi.mean(0).detach().cpu().numpy(), label='left')
+  # ax.plot(f_phi[1].detach().cpu().numpy(), label='right')
+  ax.legend()
+  plt.title('f_phi')
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/f_phi.png')
+
 def save_fig(path):
   if not os.path.exists(os.path.dirname(path)):
     os.makedirs(os.path.dirname(path))
   plt.savefig(path)
   print(path)
+  plt.close()
 
 def show_state_action_field(state_seq, action_seq, save_path):
   # state_seqs_all: [syllable, state_dim]
@@ -138,6 +167,7 @@ def show_state_action_field(state_seq, action_seq, save_path):
   if not os.path.exists(os.path.dirname(save_path)):
     os.makedirs(os.path.dirname(save_path))
   plt.savefig(save_path)
+  plt.close()
   print(save_path)
   plot_a_distribution(rotating_a, save_path.replace('.png', '_a_distribution.png'), state_name)
 
@@ -216,13 +246,14 @@ def optimize_action_to_phi_all(args, dataset, agent):
     optimize_action_to_phi(args, dataset, agent, i) 
 
 def collect_action_to_phi(args, dataset, agent, dimension):
-  n_sample = 5000
+  n_sample = 10000
   # sample_idx = all_idx[np.random.randint(0, len(all_idx), n_sample)]
   sample_idx = np.random.randint(0, dataset.size, n_sample)
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   z_phi = agent.phi(torch.concat([state, action], -1))
   f_phi = agent.critic(z_phi).detach().numpy()
-  take_idx = np.argsort(f_phi[:,dimension])[:n_sample//20]
+  print('f_phi:', f_phi.shape)
+  take_idx = np.argsort(f_phi[:,dimension])[-n_sample//50:]
   state_seq = state[take_idx].clone().detach().numpy()
   action_seq = action[take_idx].clone().detach().numpy()
   # fig, ax = plt.subplots(1,1, figsize=(10,10))
@@ -1505,6 +1536,7 @@ def action_profile_likelihood(args, dataset, agent):
     os.makedirs(os.path.dirname(fig_path))
   plt.savefig(fig_path)
   print(fig_path)
+  plt.close()
   return
 
 def action_profile_likelihood_batch(args, dataset, agent):
@@ -2139,10 +2171,11 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
 
+  assigned_action_to_phi(args, replay_buffer, agent)
   # collect_log_prob_lr_all(args, replay_buffer, agent)
   # collect_action_to_phi_all(args, replay_buffer, agent)
   # optimize_action_to_phi_all(args, replay_buffer, agent)
-  show_uw(args, replay_buffer, agent)
+  # show_uw(args, replay_buffer, agent)
   # rollout_check_profile_all(args, replay_buffer, agent)
   # profile_likelihood(args, replay_buffer, agent)
   # profile_likelihood_batch(args, replay_buffer, agent)

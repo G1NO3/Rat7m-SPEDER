@@ -1,12 +1,12 @@
-# python main.py --alg spedersac --env kms --feature_dim 16 \
-#                 --max_timesteps 1000000 --dir N_f16_cd \
-#                 --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.01 --feature_lr 0.0001 \
-                # --actor_type autoregressive
-# Caution
-python visualize.py --alg spedersac --env kms --feature_dim 16 \
-                --max_timesteps 1000000 --dir A_f16_ctrl_actorclone --start_timesteps 200\
-                --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200\
+python main.py --alg spedersac --env kms --feature_dim 16 \
+                --max_timesteps 1000000 --dir A_f16_task78_ctrl \
+                --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.01 --feature_lr 0.0001 \
                 --actor_type autoregressive
+# Caution
+# python visualize.py --alg spedersac --env kms --feature_dim 16 \
+#                 --max_timesteps 1000000 --dir A_f16_task78_ctrl --start_timesteps 200\
+#                 --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200\
+#                 --actor_type autoregressive
 # for i in 64 96 128
 # do  
     # echo "Running with feature dim: $i"

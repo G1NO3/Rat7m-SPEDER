@@ -13,7 +13,7 @@ from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
-from main import load_rat7m, load_halfcheetah, load_keymoseq, load_keymoseq
+from main import load_rat7m, load_halfcheetah, load_keymoseq, load_all_keymoseq
 from utils.util import unpack_batch
 from matplotlib import pyplot as plt
 from scipy.stats import ttest_ind
@@ -29,6 +29,64 @@ from captum.attr import NoiseTunnel
 from torch.nn import functional as F
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 
+def fit_soft_syllable(args, dataset, agent):
+  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.dir, args.device)
+  sample_len = 50
+  start_idx = 757
+  sample_idx = start_idx + np.arange(sample_len)
+  state, action, next_state, reward, done, task, next_task = unpack_batch(replay_buffer.take(sample_idx))
+  print('task:', task.reshape(-1))
+  task_onehot = F.one_hot(task.reshape(-1).long(), num_classes=agent.n_task).float()
+  initial_u = agent.u(task_onehot)
+  u_matrix = initial_u.clone().detach().requires_grad_() # [sample_len, feature_dim]
+  u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
+  f_phi = agent.critic(agent.phi(torch.concat([state, action], -1))).detach() # [sample_len, feature_dim]
+  step = 50000
+  for i in range(step):
+    Q = torch.sum(f_phi * u_matrix, dim=-1) # [sample_len]
+    negll = -Q.mean(-1)
+    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 500
+    loss_reg = (u_matrix.abs()).mean() * 50
+    loss = negll + neglogprior + loss_reg
+    u_optimizer.zero_grad()
+    loss.backward()
+    u_optimizer.step()
+    if i % 100 == 0:
+      print(f'iter {i}, loss: {loss.item():.4f}, negll: {negll.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
+  fig, ax = plt.subplots(2,1, figsize=(10,20))
+  initial_u = initial_u.detach().cpu().numpy()
+  u_matrix = u_matrix.detach().cpu().numpy()
+  for j in range(agent.feature_dim):
+    ax[0].plot(initial_u[:,j], label=f'{j}')
+  for j in range(agent.feature_dim):
+    ax[1].plot(u_matrix[:,j], label=f'{j}')
+  ax[0].legend()
+  ax[1].legend()
+  ax[0].set_title('initial u') 
+  ax[1].set_title('optimized u')
+  print('initial u:', np.argmax(initial_u, axis=1))
+  print('u_matrix:', np.argmax(u_matrix, axis=1))
+  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png'
+  save_fig(save_path)
+  plot_gif(state.detach().numpy(), f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/clip.gif')
+
+def perturb_action(args, dataset, agent):
+  sample_idx = 90
+  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  right_a = torch.FloatTensor([[ 0.0000, -0.0200,  0.0000, -0.0100,  0.0000,  0.0000,  0.0000,  0.0100,
+          0.0100,  0.0200,  0.0000,  0.0300,  0.0100,  0.0200,  0.0000,  0.0200]])
+  left_a = torch.FloatTensor([[ 0.0100, -0.0100,  0.0100, -0.0100,  0.0100,  0.0000,  0.0000,  0.0100,
+         -0.0100,  0.0000, -0.0100,  0.0000,  0.0000,  0.0200, -0.0100,  0.0000]])
+  f_right_phi = agent.critic(agent.phi(torch.concat([state, right_a], -1))).squeeze(0)
+  f_left_phi = agent.critic(agent.phi(torch.concat([state, left_a], -1))).squeeze(0)
+  fig, ax = plt.subplots(1,1, figsize=(10,5))
+  ax.plot(f_right_phi.detach().cpu().numpy(), label='right')
+  ax.plot(f_left_phi.detach().cpu().numpy(), label='left')
+  ax.legend()
+  plt.title('f_phi')
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/f_phi_perturb.png')
+  return f_right_phi, f_left_phi
+  
 def assigned_action_to_phi(args, dataset, agent):
   state_dim = 16
   action_dim = 16
@@ -609,10 +667,10 @@ def plot_gif(stateseq, save_path):
   axmin=-0.2
   axmax=0.2
   if aymin > ymin or aymax < ymax or axmin > xmin or axmax < xmax:
-    aymin = -0.4
-    aymax = 0.4
-    axmin = -0.4
-    axmax = 0.4
+    aymin = -0.6
+    aymax = 0.6
+    axmin = -0.6
+    axmax = 0.6
   for i in range(n_img):
     axis.clear()
     for p1, p2 in edges:
@@ -2129,7 +2187,7 @@ if __name__ == "__main__":
   args = parser.parse_args()
 
 
-  replay_buffer, state_dim, action_dim, n_task = load_keymoseq('test', args.dir, args.device)
+  replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   # set seeds
   torch.manual_seed(args.seed)
@@ -2170,8 +2228,9 @@ if __name__ == "__main__":
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
-
-  assigned_action_to_phi(args, replay_buffer, agent)
+  fit_soft_syllable(args, replay_buffer, agent)
+  # perturb_action(args, replay_buffer, agent)
+  # assigned_action_to_phi(args, replay_buffer, agent)
   # collect_log_prob_lr_all(args, replay_buffer, agent)
   # collect_action_to_phi_all(args, replay_buffer, agent)
   # optimize_action_to_phi_all(args, replay_buffer, agent)

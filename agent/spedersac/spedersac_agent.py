@@ -236,7 +236,12 @@ class SPEDERSACAgent():
             elif 'ctrl' in directory:
                 print('Using contrastive loss')
                 self.critic_step = self.critic_step_arq_ctrl_continuous
-        
+        if 'actorclone' in directory:
+            print('Using actor clone training, only train critic')
+            self.train = self.train_actorclone
+        else:
+            print('Using normal training')
+            self.train = self.train_normal
         self.critic_target = copy.deepcopy(self.critic)
         self.w = MLP(input_dim=self.n_task,
                      output_dim=feature_dim,
@@ -580,6 +585,17 @@ class SPEDERSACAgent():
         label = torch.eye(batch_size, batch_size).to(self.device)
         loss_ctrl = torch.nn.CrossEntropyLoss()(q_data, label)
         loss_reg = (q_data ** 2).mean() * 0.1 + batch_u.abs().mean() * 0.1
+        # z_w = self.w(expert_task_onehot)
+        # z_phi = self.phi(torch.concat([expert_state, expert_action], -1)).detach() # only need gradient in this place
+        # f_phi = self.critic(z_phi)
+        # r = torch.sum(f_phi * z_w, dim=-1, keepdim=True)
+        # V = self.get_targetV(expert_state, expert_task_onehot).detach()
+        # assert V.shape == (batch_size, 1)
+        # q_target = r + V * self.discount * (1 - expert_done)
+        # z_u = self.u(expert_task_onehot)
+        # q = torch.sum(f_phi * z_u, dim=-1, keepdim=True)
+        # assert q.shape == (batch_size, 1)
+        # loss_w = torch.nn.MSELoss()(q_target, q.detach())
         loss = loss_ctrl + loss_reg
         # print('q:', q.mean())
         # print('loss', loss.item())  
@@ -595,6 +611,7 @@ class SPEDERSACAgent():
             'loss_q': loss_ctrl.item(),
             'loss_reg': loss_reg.item(),
             # 'loss_u': loss_u.item(),
+            # 'loss_w': loss_w.item(),
             'loss_critic': loss.item(),
         }
     def critic_step_arq_cd_continuous(self, batch, s_random, a_random, s_prime_random, task_random):
@@ -945,7 +962,7 @@ class SPEDERSACAgent():
         self.actor.load_state_dict(state_dict['actor'])
         print('load actor')
 
-    def train(self, buffer, batch_size):
+    def train_normal(self, buffer, batch_size):
         """
         One train step
         """
@@ -976,7 +993,14 @@ class SPEDERSACAgent():
         if actor_info is not None:
             all_info = {**all_info, **actor_info}
         return all_info
-    
+    def train_actorclone(self, buffer, batch_size):
+        self.steps += 1
+        batch_1 = buffer.sample(batch_size)
+        batch_2 = buffer.sample(batch_size)
+        s_random, a_random, s_prime_random, _, _, task_random, next_task_random = unpack_batch(batch_2)
+        critic_info = self.critic_step(batch_1, s_random, a_random, s_prime_random, task_random)
+        self.update_target()
+        return critic_info
     def state_likelihood(self, state, action, next_state, kde=False):
         # output the device
         self.phi.eval()

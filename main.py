@@ -14,6 +14,25 @@ from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent
 from utils.util import unpack_batch
+
+def load_all_keymoseq(category, directory, device='cuda:0'):
+  state_dim = 16
+  action_dim = 16
+  n_task = 78
+  replay_buffer = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
+  replay_buffer_path = f'./kms/{category}_data_all.pth'
+  replay_buffer.load_state_dict(torch.load(replay_buffer_path))
+  print(f'Replay buffer loaded from {replay_buffer_path}')
+  print('sample state:', replay_buffer.state[0:5])
+  print('sample action:', replay_buffer.action[0:5])
+  print('sample next state:', replay_buffer.next_state[0:5])
+  print('sample task:', replay_buffer.task[0:5])
+  print('sample next task:', replay_buffer.next_task[0:5])
+  print('sample reward:', replay_buffer.reward[0:5])
+  print('sample done:', replay_buffer.done[0:5])
+  assert np.isclose(replay_buffer.state[0:5]+replay_buffer.action[0:5], replay_buffer.next_state[0:5]).all()
+  return replay_buffer, state_dim, action_dim, n_task
+
 def load_keymoseq(category, directory, device='cuda:0'):
   state_dim = 16
   action_dim = 16
@@ -106,7 +125,7 @@ if __name__ == "__main__":
   # setup log 
   log_path = f'log/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   summary_writer = SummaryWriter(log_path)
-  expert_buffer, state_dim, action_dim, n_task = load_keymoseq('train', args.dir)
+  expert_buffer, state_dim, action_dim, n_task = load_all_keymoseq('train', args.dir)
   policy_buffer = buffer.ReplayBuffer(state_dim, action_dim, 100000)
   save_path = f'model/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):

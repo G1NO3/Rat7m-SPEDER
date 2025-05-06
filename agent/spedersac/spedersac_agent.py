@@ -1020,9 +1020,11 @@ class SPEDERSACAgent():
         assert action.shape[-1] == self.action_dim
         task_onehot = torch.eye(self.n_task)[task.long()].to(self.device).squeeze(-2)
         q = -self.potential(state, action, task_onehot)
-        state_task = torch.cat([state, task_onehot], -1)
-        actor_log_prob = self.actor.log_prob(state_task, action)
-        assert actor_log_prob.shape == q.shape
+        # print('q:', q.shape)
+        # state_task = torch.cat([state, task_onehot], -1)
+        # actor_log_prob = self.actor.log_prob(state_task, action)
+        # assert actor_log_prob.shape == q.shape
+        actor_log_prob = q
         return actor_log_prob, q
     def action_loglikelihood_calib(self, state, action, task):
         assert action.shape[-1] == self.action_dim

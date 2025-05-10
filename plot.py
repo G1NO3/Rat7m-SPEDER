@@ -174,11 +174,11 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
       ax0.plot(
           *state_seq_to_plot[i, (p1, p2)].T,
           color=keypoint_colors[p1],
-          linewidth=5.0,zorder=0)
+          linewidth=5.0)
     ax0.scatter(
         *state_seq_to_plot[i].T,
         c=keypoint_colors,
-        s=100,zorder=0)
+        s=100)
     for j in range(u_matrix.shape[1]):
       ax1.plot(u_matrix[:,j], label=f'{j}')
     ax1.vlines(i, ymin=u_matrix.min(), ymax=u_matrix.max(), color='black', linestyle='--')

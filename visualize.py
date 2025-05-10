@@ -143,9 +143,9 @@ def fit_soft_syllable(args, dataset, agent):
     z_phi = agent.phi(torch.concat([state, action], -1))
     z_phi_matrix[i] = z_phi
   # u_optimizer = torch.optim.Adam([u_matrix]+list(agent.critic.parameters()), lr=1e-4)
-  u_matrix = torch.randn_like(u_matrix).requires_grad_()
-  u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
-  critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
+  # u_matrix = torch.randn_like(u_matrix).requires_grad_()
+  u_optimizer = torch.optim.Adam([u_matrix], lr=1e-4)
+  critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-4)
   # step = 50000
   iteration = 50
   n_step = 1000
@@ -159,8 +159,8 @@ def fit_soft_syllable(args, dataset, agent):
     Q = torch.sum(f_phi_matrix * u_matrix.unsqueeze(0), dim=-1).T
     assert Q.shape == label.shape
     loss_ctrl = nn.CrossEntropyLoss()(Q, label)
-    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 100
-    loss_reg = (u_matrix.abs()).mean() * 1
+    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 0.001
+    loss_reg = (u_matrix.abs()).mean() * 1e-3
     # loss_reg = torch.zeros_like(neglogprior)
     loss = loss_ctrl + neglogprior + loss_reg
     return loss, loss_ctrl, neglogprior, loss_reg

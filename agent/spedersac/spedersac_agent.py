@@ -216,11 +216,19 @@ class SPEDERSACAgent():
                 hidden_dim=critic_and_actor_hidden_dim,
                 hidden_depth=0,
                 bias=False).to(device)
-            self.critic = MLP(input_dim=feature_dim,
-                            output_dim=feature_dim,
-                            hidden_dim=critic_and_actor_hidden_dim,
-                            hidden_depth=1,
-                            bias=True).to(device)
+            if 'critic_nohidden' in directory:
+                self.critic = MLP(input_dim=feature_dim,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim,
+                                hidden_depth=0,
+                                bias=True,
+                                output_mod=nn.ELU()).to(device)
+            else:
+                self.critic = MLP(input_dim=feature_dim,
+                                output_dim=feature_dim,
+                                hidden_dim=critic_and_actor_hidden_dim,
+                                hidden_depth=1,
+                                bias=True).to(device)
             self.potential = self.continuous_potential
             if 'q_calib' in directory:
                 print('Using Q calibration, MSE loss')

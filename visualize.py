@@ -30,6 +30,20 @@ from torch.nn import functional as F
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 import pickle
 from functools import partial
+from scipy.stats import wasserstein_distance
+from scipy.special import kl_div
+from sklearn.metrics import roc_auc_score, roc_curve
+from plot import save_fig, get_edges, plot_gif_onefig, rasterize_figure, pair_gif_and_u
+
+def sample_and_plot_gif_onefig(args, dataset, agent):
+  state_dim = 16
+  action_dim = 16
+  n_task = 78
+  sample_len = 30
+  start_idx = 68290
+  sample_idx = start_idx + np.arange(sample_len)
+  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  plot_gif_onefig(state.detach().cpu().numpy(), f'./figure/kms/rollout_{start_idx}.png')
 
 def compare_action_ll(agent, state, action, task, optimized_u, batch_size):
   root = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
@@ -61,7 +75,6 @@ def compare_action_ll(agent, state, action, task, optimized_u, batch_size):
     ax[i].set_title(f'{title_list[i]}, p={p}')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/compare_action_ll.png'
   save_fig(save_path)
-
 
   
 def cal_action_ll_batch(state, action, task, likelihood_fn, batch_size=256, bins=21, scale_factor=200, save_path=None):
@@ -101,22 +114,24 @@ def agent_likelihood_fn(agent, state, action, task, u_matrix):
   # u_matrix: [batch, feature_dim]
   f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
   q = torch.sum(f_phi * u_matrix, dim=-1)
+  # z_phi = agent.phi(torch.concat([state, action], -1))
+  # q = torch.sum(z_phi * u_matrix, dim=-1)
   return q
 
 def fit_soft_syllable(args, dataset, agent):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
-  np.random.seed(0)
-  sample_len = 100
-  n_sample = 4
-  f_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
+  np.random.seed(3)
+  sample_len = 250
+  n_sample = 16
+  z_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
   for i in range(n_sample):
     sample_idx = np.random.randint(0, dataset.size) + np.arange(sample_len)
     state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
     if i == 0:
-      # sample_idx = 68290 + np.arange(sample_len)
+      sample_idx = 68290 + np.arange(sample_len)
       # sample_idx = 58600 + np.arange(sample_len)
       # sample_idx = 4610 + np.arange(sample_len)
-      # state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+      state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
       print('sample_idx:', sample_idx)
       print('task:', task)
       task_onehot = F.one_hot(task.reshape(-1).long(), num_classes=agent.n_task).float()
@@ -125,47 +140,78 @@ def fit_soft_syllable(args, dataset, agent):
       initial_state = state.clone().detach()
       initial_task = task.clone().detach()
       initial_action = action.clone().detach()
-    f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
-    f_phi_matrix[i] = f_phi
-  u_optimizer = torch.optim.Adam([u_matrix], lr=1e-4)
-  step = 50000
+    z_phi = agent.phi(torch.concat([state, action], -1))
+    z_phi_matrix[i] = z_phi
+  # u_optimizer = torch.optim.Adam([u_matrix]+list(agent.critic.parameters()), lr=1e-4)
+  u_matrix = torch.randn_like(u_matrix).requires_grad_()
+  u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
+  critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
+  # step = 50000
+  iteration = 50
+  n_step = 1000
   label = torch.zeros((sample_len, n_sample))
   label[:,0] = 1
   label.requires_grad = False
-  f_phi_matrix = f_phi_matrix.detach()
-  for i in range(step):
-    Q = torch.sum(f_phi_matrix * u_matrix.unsqueeze(0), dim=-1).T # [sample_len, n_sample]
+  z_phi_matrix = z_phi_matrix.detach()
+  # f_phi_matrix = f_phi_matrix.detach()
+  initial_f_phi_matrix = agent.critic(z_phi_matrix).detach()
+  def loss_fn(u_matrix, f_phi_matrix):
+    Q = torch.sum(f_phi_matrix * u_matrix.unsqueeze(0), dim=-1).T
     assert Q.shape == label.shape
     loss_ctrl = nn.CrossEntropyLoss()(Q, label)
-    # loss_ctrl = -Q.mean()
-    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 10
-    loss_reg = (u_matrix.abs()).mean() * 0.5
+    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 100
+    loss_reg = (u_matrix.abs()).mean() * 1
+    # loss_reg = torch.zeros_like(neglogprior)
     loss = loss_ctrl + neglogprior + loss_reg
-    u_optimizer.zero_grad()
-    loss.backward()
-    u_optimizer.step()
-    if i % 1000 == 0:
-      print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
-  initial_q = torch.sum(f_phi_matrix[0] * initial_u, dim=-1).sum()
+    return loss, loss_ctrl, neglogprior, loss_reg
+  for i in range(iteration):
+    f_phi_matrix = agent.critic(z_phi_matrix).detach()
+    for j in range(n_step):
+      loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
+      u_optimizer.zero_grad()
+      loss.backward()
+      u_optimizer.step()
+    for j in range(n_step):
+      f_phi_matrix = agent.critic(z_phi_matrix)
+      loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
+      critic_optimizer.zero_grad()
+      loss.backward()
+      critic_optimizer.step()
+
+    print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
+  f_phi_matrix = agent.critic(z_phi_matrix).detach()
+  # print('initial_f_phi_matrix:', initial_f_phi_matrix)
+  # print('f_phi_matrix:', f_phi_matrix)
+  initial_q = torch.sum(initial_f_phi_matrix[0] * initial_u, dim=-1).sum()
   optimized_q = torch.sum(f_phi_matrix[0] * u_matrix, dim=-1).sum()
-  fig, ax = plt.subplots(2,1, figsize=(5,10))
+  # initial_q = torch.sum(z_phi_matrix[0] * initial_u, dim=-1).sum()
+  # optimized_q = torch.sum(z_phi_matrix[0] * u_matrix, dim=-1).sum()
+  fig, ax = plt.subplots(2,2, figsize=(10,10))
+  ax = ax.flatten()
   initial_u_numpy = initial_u.detach().cpu().numpy()
   u_matrix_numpy = u_matrix.detach().cpu().numpy()
   for j in range(agent.feature_dim):
     ax[0].plot(initial_u_numpy[:,j], label=f'{j}')
+  ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
   for j in range(agent.feature_dim):
-    ax[1].plot(u_matrix_numpy[:,j], label=f'{j}')
+    ax[2].plot(u_matrix_numpy[:,j], label=f'{j}')
+  ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
+  cor = np.corrcoef(initial_u_numpy.flatten(), u_matrix_numpy.flatten())
   ax[0].legend()
-  ax[1].legend()
+  ax[2].legend()
   ax[0].set_title(f'initial u, q: {initial_q:.4f}') 
-  ax[1].set_title(f'optimized u, q: {optimized_q:.4f}')
+  ax[2].set_title(f'optimized u, q: {optimized_q:.4f}')
+  ax[1].set_title(f'initial f_phi, cor: {cor[0,1]:.4f}')
   print('initial u:', np.argmax(initial_u_numpy, axis=1))
   print('u_matrix:', np.argmax(u_matrix_numpy, axis=1))
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png'
-  save_fig(save_path)
-  plot_gif(initial_state.numpy(), f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/clip.gif', initial_task.numpy())
+  # save_fig(save_path)
   np.save('./kms/u_matrix.npy', u_matrix_numpy)
-  compare_action_ll(agent, initial_state, initial_action, initial_task, u_matrix, batch_size=sample_len)
+  # compare_action_ll(agent, initial_state, initial_action, initial_task, u_matrix, batch_size=sample_len)
+  torch.save(agent.critic.state_dict(), f'./kms/critic_16.pth')  
+  print('./kms/critic_16.pth')
+  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
+  pair_gif_and_u(initial_state.numpy(), u_matrix_numpy, initial_task.numpy(), f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u.gif')
 
 def perturb_action(args, dataset, agent):
   sample_idx = 90
@@ -177,15 +223,20 @@ def perturb_action(args, dataset, agent):
           0.0100,  0.0200,  0.0000,  0.0300,  0.0100,  0.0200,  0.0000,  0.0200]])
   left_a = torch.FloatTensor([[ 0.0100, -0.0100,  0.0100, -0.0100,  0.0100,  0.0000,  0.0000,  0.0100,
          -0.0100,  0.0000, -0.0100,  0.0000,  0.0000,  0.0200, -0.0100,  0.0000]])
-  f_right_phi = agent.critic(agent.phi(torch.concat([state, right_a], -1))).squeeze(0)
-  f_left_phi = agent.critic(agent.phi(torch.concat([state, left_a], -1))).squeeze(0)
+  # f_right_phi = agent.critic(agent.phi(torch.concat([state, right_a], -1))).squeeze(0)
+  # f_left_phi = agent.critic(agent.phi(torch.concat([state, left_a], -1))).squeeze(0)
+  z_right_phi = agent.phi(torch.concat([state, right_a], -1)).squeeze(0)
+  z_left_phi = agent.phi(torch.concat([state, left_a], -1)).squeeze(0)
   fig, ax = plt.subplots(1,1, figsize=(10,5))
-  ax.plot(f_right_phi.detach().cpu().numpy(), label='right')
-  ax.plot(f_left_phi.detach().cpu().numpy(), label='left')
+  # ax.plot(f_right_phi.detach().cpu().numpy(), label='right')
+  # ax.plot(f_left_phi.detach().cpu().numpy(), label='left')
+  ax.plot(z_right_phi.detach().cpu().numpy(), label='right')
+  ax.plot(z_left_phi.detach().cpu().numpy(), label='left')
   ax.legend()
   plt.title('f_phi')
   save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/f_phi_perturb.png')
-  return f_right_phi, f_left_phi
+  # return f_right_phi, f_left_phi
+  return z_right_phi, z_left_phi
   
 def assigned_action_to_phi(args, dataset, agent):
   state_dim = 16
@@ -215,12 +266,6 @@ def assigned_action_to_phi(args, dataset, agent):
   plt.title('f_phi')
   save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/f_phi.png')
 
-def save_fig(path):
-  if not os.path.exists(os.path.dirname(path)):
-    os.makedirs(os.path.dirname(path))
-  plt.savefig(path)
-  print(path)
-  plt.close()
 
 def show_sa(state_seq, action_seq, save_path):
   edges, state_name, n_dim = get_edges(state_seq.shape[-1])
@@ -441,7 +486,8 @@ def collect_action_to_phi(args, dataset, agent, dimension):
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   z_phi = agent.phi(torch.concat([state, action], -1))
   f_phi = agent.critic(z_phi).detach().numpy()
-  print('f_phi:', f_phi.shape)
+  # z_phi = z_phi.detach().numpy()
+  # print('f_phi:', f_phi.shape)
   take_idx = np.argsort(f_phi[:,dimension])[-n_sample//50:]
   state_seq = state[take_idx].clone().detach().numpy()
   action_seq = action[take_idx].clone().detach().numpy()
@@ -453,11 +499,13 @@ def collect_action_to_phi(args, dataset, agent, dimension):
   return average_state, average_action
 
 def collect_action_to_phi_all(args, dataset, agent):
+  agent.critic.load_state_dict(torch.load(f'./kms/critic_16.pth'))
   average_state_ar = np.zeros((agent.feature_dim, agent.state_dim))
   average_action_ar = np.zeros((agent.feature_dim, agent.action_dim))
   for i in range(agent.feature_dim):
     average_state_ar[i], average_action_ar[i] = collect_action_to_phi(args, dataset, agent, i)
   show_sa(average_state_ar, average_action_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi_average.png')
+  return average_state_ar, average_action_ar
 
 def action_loglikelihood_multiple_syllables(args, dataset, agent):
   for i in range(agent.n_task):
@@ -840,13 +888,7 @@ def plot_gif(stateseq, save_path, taskseq=None):
   )
   print(save_path)
 
-def rasterize_figure(fig):
-  canvas = fig.canvas
-  canvas.draw()
-  width, height = canvas.get_width_height()
-  raster_flat = np.frombuffer(canvas.tostring_rgb(), dtype="uint8")
-  raster = raster_flat.reshape((height, width, 3))
-  return raster
+
 
 def is_clockwise(stateseq):
   # stateseq: [timestep, state_dim]
@@ -976,33 +1018,6 @@ def visualize_wu(args, dataset, agent):
   print(save_path)
   plt.close()
 
-def get_edges(state_dim):
-  if state_dim == 54:
-    state_name = ['HeadF','HeadB','HeadL','SpineF','SpineM',
-                  'SpineL','HipL','HipR','ElbowL','ArmL',
-                  'ShoulderL','ShoulderR','ElbowR','ArmR','KneeR',
-                  'KneeL','ShinL','ShinR']
-
-    skeleton = [('HeadF', 'HeadB'), ('HeadF', 'HeadL'), ('HeadB', 'HeadL'),
-                ('HeadB', 'SpineF'), ('HeadL', 'SpineF'), ('SpineF', 'SpineM'),
-                ('SpineM', 'SpineL'), ('SpineF', 'ShoulderL'), ('ShoulderL', 'ElbowL'),
-                ('ElbowL', 'ArmL'), ('SpineF', 'ShoulderR'), ('ShoulderR', 'ElbowR'),
-                ('ElbowR', 'ArmR'), ('SpineM', 'HipL'), ('HipL', 'KneeL'),
-                ('KneeL', 'ShinL'), ('SpineM', 'HipR'), ('HipR', 'KneeR'),
-                ('KneeR', 'ShinR')]
-    n_dim = 3
-  elif state_dim == 16:
-    state_name = ['spine4', 'spine3', 'spine2', 'spine1', 'head', 'nose', 'right ear', 'left ear']
-    skeleton = [('spine4', 'spine3'), ('spine3', 'spine2'),
-                ('spine2', 'spine1'), ('spine1', 'head'), ('head', 'nose'),
-                ('head', 'left ear'), ('head', 'right ear')]
-    n_dim = 2
-  else:
-    raise ValueError(f'state_dim {state_dim} not supported')
-  edges = []
-  for i in skeleton:
-    edges.append((state_name.index(i[0]), state_name.index(i[1])))
-  return edges, state_name, n_dim
 
 def PCA_IG_skeleton(args, dataset, agent):
   # ig_matrix: [feature_dim, state_dim+action_dim]
@@ -1583,7 +1598,7 @@ def test_logll(args, dataset, agent, times=100):
   # print(negative_ll)
   # significance test
   t_stat, p_value = ttest_ind(positive_ll, negative_ll, equal_var=False)
-  fig, ax = plt.subplots(figsize=(5,5))
+  fig, ax = plt.subplots(figsize=(4,4))
   print('positive sample:', positive_ll.mean(), positive_ll.std())
   print('negative sample:', negative_ll.mean(), negative_ll.std())
   print('p_value:', p_value)
@@ -1593,11 +1608,11 @@ def test_logll(args, dataset, agent, times=100):
   # ax.hist(positive_ll, bins=2, density=True, alpha=0.6, color='orange')
   # ax.hist(negative_ll, bins=2, density=True, alpha=0.6, color='g')
   plt.legend(['positive sample', 'negative sample'])
-  plt.title(f'likelihood, p={p_value}')
+  # plt.title(f'likelihood, p={p_value}')
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}'
   if not os.path.exists(save_path):
     os.makedirs(save_path)
-  plt.savefig(f'{save_path}/ll.png')
+  plt.savefig(f'{save_path}/ll.pdf', dpi=400)
   print(f'{save_path}/ll.png')
   plt.close()
   fig, axes = plt.subplots(1,2, figsize=(10,5))
@@ -1611,8 +1626,10 @@ def test_logll(args, dataset, agent, times=100):
   return positive_ll.mean(), positive_ll.std(), negative_ll.mean(), negative_ll.std()
 
 def action_test_logll(args, dataset, agent):
+  agent.critic.load_state_dict(torch.load('./kms/critic_16.pth'))
+  np.random.seed(3)
   scale_factor = args.scale_factor
-  batch_size = 16
+  batch_size = 256
   times = 100
   positive_logll = np.zeros(times)
   positive_q = np.zeros(times)
@@ -1673,6 +1690,8 @@ def action_test_logll(args, dataset, agent):
   ax[1].legend(['positive sample', 'negative sample'])
   ax[1].set_title(f'action q value, p={p}')
   t,p = ttest_rel(pos_lr_logll, neg_lr_logll)
+  print('pos_lr_logll:', pos_lr_logll)
+  print('neg_lr_logll:', neg_lr_logll)
   print('t:', t, 'p:', p)
   ax[2].hist(pos_lr_logll, bins=20, alpha=0.6, density=True, color='orange')
   ax[2].hist(neg_lr_logll, bins=20, alpha=0.6, density=True, color='g')
@@ -1682,6 +1701,37 @@ def action_test_logll(args, dataset, agent):
   plt.subplots_adjust(hspace=0.1,left=0.1, right=0.9)
   save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll.png'
   save_fig(save_path)
+  # print('ebm:',kl_div(positive_logll, negative_logll))
+  # print('linear:',kl_div(pos_lr_logll, neg_lr_logll))
+  # train a classifier to distinguish positive and negative samples
+  y_agent_true = np.concatenate([np.ones_like(positive_logll), np.zeros_like(negative_logll)])
+  y_lr_true = np.concatenate([np.ones_like(pos_lr_logll), np.zeros_like(neg_lr_logll)])
+  auc_agent = roc_auc_score(y_agent_true, np.concatenate([positive_logll, negative_logll]))
+  auc_lr = roc_auc_score(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  fig, ax = plt.subplots(1,1, figsize=(3.2,3))
+
+  fpr1, tpr1, _ = roc_curve(y_agent_true, np.concatenate([positive_logll, negative_logll]))
+  fpr2, tpr2, _ = roc_curve(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  ax.plot(fpr1, tpr1, color='orange', label=f'SKIL, AUC:{auc_agent:.4f}')
+  ax.plot(fpr2, tpr2, color='g', label=f'linear, AUC:{auc_lr:.4f}')
+  ax.legend()
+  ax.plot([0, 1], [0, 1], color='k', linestyle='--')
+  ax.set_xlabel('False Positive Rate')
+  ax.set_ylabel('True Positive Rate')
+  # ax.set_title(f'AUC: SKIL, Linear')
+  # ax[1].bar(['SKIL', 'linear'], [auc_agent, auc_lr], color=['orange', 'g'])
+  # ax[1].set_ylabel('AUC')
+  plt.subplots_adjust(left=0.2, right=0.99, bottom=0.2, top=0.95)
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc.pdf', dpi=400)
+  # test_logll_dict = {
+  #   'positive_q':positive_q,
+  #   'negative_q':negative_q,
+  #   'pos_lr_logll':pos_lr_logll,
+  #   'neg_lr_logll':neg_lr_logll,
+  # }
+  # save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_logll_dict.pkl'
+  # pickle.dump(test_logll_dict, open(save_path, 'wb'))
+  # print(save_path)
 
 
 
@@ -1690,8 +1740,9 @@ def action_test_logll(args, dataset, agent):
 def action_profile_likelihood(args, dataset, agent):
   scale_factor = args.scale_factor
   torch.set_printoptions(threshold=torch.inf)
-  sample_idx = 78
+  sample_idx = 8777
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  # state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.sample(1))
   fig, axes = plt.subplots(4,4, figsize=(10,10))
   axes = axes.flatten()
   bins = 21
@@ -1702,14 +1753,15 @@ def action_profile_likelihood(args, dataset, agent):
   # lr = torch.load('./kms/linear_model.pth')
   lr = pickle.load(open('./kms/linear_all.pkl', 'rb'))
   # action_pred = lr.predict(state.detach().cpu().numpy())
+  # action=action_2
   for i in range(agent.action_dim):
     action_i_scan = torch.linspace(action[show_idx,i]-total_range/2, action[show_idx,i]+total_range/2, bins)
     logll = torch.zeros((bins,))
     for j in range(bins):
       new_action = action.clone()
       new_action[show_idx,i] = action_i_scan[j]
-      # logll[j] = agent.action_loglikelihood(state, new_action, task)[1].detach().cpu()
-      logll[j] = linear_loglikelihood(state, new_action, task, lr)
+      logll[j] = agent.action_loglikelihood(state, new_action, task)[1].detach().cpu()
+      # logll[j] = linear_loglikelihood(state, new_action, task, lr)
     all_logll[i] = logll
     axes[i].plot(action_i_scan, logll)
     # print(torch.exp(logll))
@@ -1753,10 +1805,11 @@ def action_profile_likelihood_batch(args, dataset, agent):
   lr = pickle.load(open('./kms/linear_all.pkl', 'rb'))
   action_dim = agent.action_dim
   for i in range(times):
+    # sample_idx = np.array([8777, 8778])
     # sample_idxs = np.random.randint(0, dataset.size, batch_size)
     # print('sample_idxs:', sample_idxs)
     state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.sample(batch_size))
-    # print('state:', state, 'action:', action, 'next_state:', next_state)
+    # state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.sample(batch_size))
     # assert torch.isclose(state + action, next_state, atol=1e-6).all()
     assert next_state.shape == (batch_size, agent.state_dim)
     center = (bins-1)//2
@@ -2406,6 +2459,7 @@ if __name__ == "__main__":
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
+  # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   fit_soft_syllable(args, replay_buffer, agent)
   # perturb_action(args, replay_buffer, agent)
   # assigned_action_to_phi(args, replay_buffer, agent)

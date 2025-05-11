@@ -33,8 +33,9 @@ from functools import partial
 from scipy.stats import wasserstein_distance
 from scipy.special import kl_div
 from sklearn.metrics import roc_auc_score, roc_curve
-from plot import save_fig, get_edges, plot_gif_onefig, rasterize_figure, pair_gif_and_u
-
+from plot import save_fig, get_edges, plot_gif_onefig, rasterize_figure, pair_gif_and_u, \
+              plot_auc, plot_u, cal_plot_auc, agent_likelihood_fn, linear_loglikelihood
+from finetune_agent import Finetune_Agent
 def sample_and_plot_gif_onefig(args, dataset, agent):
   state_dim = 16
   action_dim = 16
@@ -108,20 +109,11 @@ def cal_action_ll_batch(state, action, task, likelihood_fn, batch_size=256, bins
   return peak_score, higher_than_mean, higher_than_80quantile
 
 
-def agent_likelihood_fn(agent, state, action, task, u_matrix):
-  # state: [batch, state_dim]
-  # action: [batch, action_dim]
-  # u_matrix: [batch, feature_dim]
-  f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
-  q = torch.sum(f_phi * u_matrix, dim=-1)
-  # z_phi = agent.phi(torch.concat([state, action], -1))
-  # q = torch.sum(z_phi * u_matrix, dim=-1)
-  return q
 
 def fit_soft_syllable(args, dataset, agent):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   np.random.seed(3)
-  sample_len = 250
+  sample_len = 25
   n_sample = 16
   z_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
   for i in range(n_sample):
@@ -147,7 +139,7 @@ def fit_soft_syllable(args, dataset, agent):
   u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
   critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
   # step = 50000
-  iteration = 50
+  iteration = 1
   n_step = 1000
   label = torch.zeros((sample_len, n_sample))
   label[:,0] = 1
@@ -180,38 +172,26 @@ def fit_soft_syllable(args, dataset, agent):
 
     print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
   f_phi_matrix = agent.critic(z_phi_matrix).detach()
-  # print('initial_f_phi_matrix:', initial_f_phi_matrix)
-  # print('f_phi_matrix:', f_phi_matrix)
-  initial_q = torch.sum(initial_f_phi_matrix[0] * initial_u, dim=-1).sum()
-  optimized_q = torch.sum(f_phi_matrix[0] * u_matrix, dim=-1).sum()
-  # initial_q = torch.sum(z_phi_matrix[0] * initial_u, dim=-1).sum()
-  # optimized_q = torch.sum(z_phi_matrix[0] * u_matrix, dim=-1).sum()
-  fig, ax = plt.subplots(2,2, figsize=(10,10))
-  ax = ax.flatten()
-  initial_u_numpy = initial_u.detach().cpu().numpy()
-  u_matrix_numpy = u_matrix.detach().cpu().numpy()
-  for j in range(agent.feature_dim):
-    ax[0].plot(initial_u_numpy[:,j], label=f'{j}')
-  ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
-  for j in range(agent.feature_dim):
-    ax[2].plot(u_matrix_numpy[:,j], label=f'{j}')
-  ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
-  cor = np.corrcoef(initial_u_numpy.flatten(), u_matrix_numpy.flatten())
-  ax[0].legend()
-  ax[2].legend()
-  ax[0].set_title(f'initial u, q: {initial_q:.4f}') 
-  ax[2].set_title(f'optimized u, q: {optimized_q:.4f}')
-  ax[1].set_title(f'initial f_phi, cor: {cor[0,1]:.4f}')
-  print('initial u:', np.argmax(initial_u_numpy, axis=1))
-  print('u_matrix:', np.argmax(u_matrix_numpy, axis=1))
-  save_path = f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png'
-  # save_fig(save_path)
-  np.save('./kms/u_matrix.npy', u_matrix_numpy)
+  # plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, agent.feature_dim, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png')
   # compare_action_ll(agent, initial_state, initial_action, initial_task, u_matrix, batch_size=sample_len)
   torch.save(agent.critic.state_dict(), f'./kms/critic_16.pth')  
   print('./kms/critic_16.pth')
-  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
-  pair_gif_and_u(initial_state.numpy(), u_matrix_numpy, initial_task.numpy(), f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u.gif')
+  average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
+  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar},
+              open(f'./kms/average_state_action_ar.pkl', 'wb'))
+  # average_state_ar = average_action_ar = None
+  pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
+                 average_state_ar, average_action_ar,
+                 f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u.gif')
+  # auc = cal_plot_auc(initial_state, initial_action, initial_task, 
+                # u_matrix, dataset, agent, batch_size=sample_len, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc.pdf')
+
+
+def fit_soft_syllable_batch(args, dataset, agent):
+  finetune_agent = Finetune_Agent(args, dataset, agent)
+  finetune_agent.fit_soft_syllable_batch()
+
+
 
 def perturb_action(args, dataset, agent):
   sample_idx = 90
@@ -1626,7 +1606,7 @@ def test_logll(args, dataset, agent, times=100):
   return positive_ll.mean(), positive_ll.std(), negative_ll.mean(), negative_ll.std()
 
 def action_test_logll(args, dataset, agent):
-  agent.critic.load_state_dict(torch.load('./kms/critic_16.pth'))
+  # agent.critic.load_state_dict(torch.load('./kms/critic_16.pth'))
   np.random.seed(3)
   scale_factor = args.scale_factor
   batch_size = 256
@@ -1883,26 +1863,6 @@ def action_profile_likelihood_batch(args, dataset, agent):
   print(text_path)
   return
 
-def linear_loglikelihood(state, action, task, lr):
-  # print('lr:', type(lr))
-  lr_coef = torch.FloatTensor(lr['coef_matrix'])
-  lr_intercept = torch.FloatTensor(lr['intercept_matrix'])
-  lr_var = torch.FloatTensor(lr['var_matrix'])
-  # print('lr_coef:', lr_coef.shape, 'lr_intercept:', lr_intercept.shape, 'lr_var:', lr_var.shape)
-  n_task = lr_coef.shape[0]
-  assert lr_coef.shape == (n_task, state.shape[-1], action.shape[-1])
-  assert lr_intercept.shape == (n_task, action.shape[-1],)
-  assert lr_var.shape == (n_task, action.shape[-1],)
-  task = task.squeeze(-1).long()
-  linear_coef_matrix = lr_coef[task]
-  linear_intercept_matrix = lr_intercept[task]
-  linear_var_matrix = lr_var[task]
-  # batch_size, n_action_dim, bins, action_dim, state_dim = linear_coef_matrix.shape
-  # print('state:', state.shape, 'linear_coef_matrix:', linear_coef_matrix.shape)
-  pred_action = torch.matmul(state.unsqueeze(-2), torch.transpose(linear_coef_matrix, -1, -2)).squeeze(-2) + linear_intercept_matrix
-  ll = - 0.5 * (torch.square(pred_action - action)) / linear_var_matrix
-  # assert ll.shape == (batch_size, n_action_dim, bins, action_dim) 
-  return ll.sum(-1)
 
 
 def action_profile_likelihood_discrete(args, dataset, agent):
@@ -2460,6 +2420,7 @@ if __name__ == "__main__":
   # agent.load_actor(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
+  # fit_soft_syllable_batch(args, replay_buffer, agent)
   fit_soft_syllable(args, replay_buffer, agent)
   # perturb_action(args, replay_buffer, agent)
   # assigned_action_to_phi(args, replay_buffer, agent)

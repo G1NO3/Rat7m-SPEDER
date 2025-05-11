@@ -127,11 +127,12 @@ def plot_gif_onefig(stateseq, save_path):
     axis.set_ylim(aymin, aymax)
   save_fig(save_path)
 
-
-def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
+def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action_ar, save_path):
   # stateseq: [timestep, state_dim]
   # u_matrix: [timestep, feature_dim]
   # taskseq: [timestep, 1]
+  # average_state_ar: [feature_dim, state_dim]
+  # average_action_ar: [feature_dim, action_dim]
   edges, state_name, n_dim = get_edges(stateseq.shape[-1])
   n_bodyparts = len(state_name)
   timestep = stateseq.shape[0]
@@ -153,17 +154,43 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
   aymax = np.where(indicator, 0.7, aymax)
   axmin = np.where(indicator, -0.7, axmin)
   axmax = np.where(indicator, 0.6, axmax) 
-  fig = plt.figure(figsize=(16, 4))
-  ax0 = fig.add_axes([0.05, 0.12, 0.2, 0.8])
-  ax1 = fig.add_axes([0.3, 0.12, 0.68, 0.8])
-  ax_kmslabel = fig.add_axes([0.3, 0.05, 0.68, 0.07])
+  fig_width, fig_height = 16, 4+3
+  n_skill_shown = 6
+  ax0_left = 0.8
+  ax0_width = ax0_height = ax1_height = 3.2
+  ax0_bottom = ax1_bottom = 0.48+3
+  ax1_left = ax_kmslabel_left = 4.8
+  ax1_width = ax_kmslabel_width = 10.88
+  ax_kmslabel_bottom = 0.2+3
+  ax_kmslabel_height = ax1_bottom - ax_kmslabel_bottom
+  
+  ax_skill_bottom = 0.3
+  ax_skill_hspace = 0.2
+  ax_gap_hspace = 0.3
+  ax_skill_width = ax_skill_height = (fig_width - ax0_left*2 - ax_skill_hspace*(n_skill_shown-1))/n_skill_shown
+  ax_skill_left = [ax0_left+(ax_skill_width+ax_skill_hspace)*i for i in range(n_skill_shown)]
+  ax_skill_left = [x-ax_gap_hspace if i < n_skill_shown//2 else x+ax_gap_hspace for i, x in enumerate(ax_skill_left)]
+  
+
+  fig = plt.figure(figsize=(fig_width, fig_height))
+  ax0 = fig.add_axes([ax0_left/fig_width, ax0_bottom/fig_height, ax0_width/fig_width, ax0_height/fig_height])
+  ax1 = fig.add_axes([ax1_left/fig_width, ax1_bottom/fig_height, ax1_width/fig_width, ax1_height/fig_height])
+  ax_kmslabel = fig.add_axes([ax_kmslabel_left/fig_width, ax_kmslabel_bottom/fig_height, ax_kmslabel_width/fig_width, ax_kmslabel_height/fig_height])
+  ax_skill = [fig.add_axes([ax_skill_left[i]/fig_width, ax_skill_bottom/fig_height, ax_skill_width/fig_width, ax_skill_height/fig_height]) for i in range(n_skill_shown)]
+  ax_skill[1].set_title('5', fontsize=15, pad=8)
+  ax_skill[1].set_xlabel('Highest', fontsize=15, labelpad=12)
+  ax_skill[4].set_xlabel('Lowest', fontsize=15, labelpad=12)
+  # set_ax_color_width(ax_skill[1], 'orange', 10)
+  # set_ax_color_width(ax_skill[4], 'g', 10)
   ax_kmslabel.axis('off')
   ax0.axis('off')
+  skill_cmap = plt.cm.get_cmap('Set1')
   rasters = []
   for i in range(timestep):
     ax0.clear()
     ax1.clear()
     ax_kmslabel.clear()
+    [ax_skill[i].clear() for i in range(n_skill_shown)]
     ax0.set_xlim(axmin, axmax)
     ax0.set_ylim(aymin, aymax)
     ax1.set_xlim(0, u_matrix.shape[0])
@@ -178,9 +205,9 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
     ax0.scatter(
         *state_seq_to_plot[i].T,
         c=keypoint_colors,
-        s=100,zorder=0)
+        s=100,zorder=1)
     for j in range(u_matrix.shape[1]):
-      ax1.plot(u_matrix[:,j], label=f'{j}')
+      ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
     ax1.vlines(i, ymin=u_matrix.min(), ymax=u_matrix.max(), color='black', linestyle='--')
     ax1.set_ylim(u_matrix.min(), u_matrix.max())
     ax1.legend(loc='upper right', fontsize=8)
@@ -188,6 +215,13 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
     u_matrix_idx = np.argsort(u_matrix, 1)
     ax1.set_title(f'{i}, first:{u_matrix_idx[i,-1], u_matrix_idx[i,-2], u_matrix_idx[i,-3]}, \
                   last:{u_matrix_idx[i,2], u_matrix_idx[i,1], u_matrix_idx[i,0]}')
+    
+    skill_idx_to_plot = np.array([u_matrix_idx[i, -1], u_matrix_idx[i, -2], u_matrix_idx[i, -3],
+                         u_matrix_idx[i, 2], u_matrix_idx[i, 1], u_matrix_idx[i, 0]])
+    state_all = average_state_ar[skill_idx_to_plot]
+    action_all = average_action_ar[skill_idx_to_plot]
+    show_sa_all(ax_skill, state_all, action_all, skill_idx_to_plot, skill_cmap)
+
     ax_kmslabel.imshow(taskseq_to_plot.reshape(1,-1), aspect='auto', cmap='Set1',
                        extent=[0, u_matrix.shape[0], 0, 1])
     ax_kmslabel.set_yticks([])
@@ -218,3 +252,154 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, save_path):
   print(save_path)
   convert_gif_to_mp4(save_path)
 
+def show_sa_all(axs, state_all, action_all, skill_all, skill_cmap):
+  # state_all: [n_sample, state_dim]
+  # action_all: [n_sample, action_dim]
+  edges, state_name, n_dim = get_edges(state_all.shape[-1])
+  n_bodyparts = len(state_name)
+  n_sample = state_all.shape[0]
+  state_seqs_to_plot = state_all.reshape(-1, n_bodyparts, 2)
+  action_seqs_to_plot = action_all.reshape(-1, n_bodyparts, 2)
+  cmap = plt.cm.get_cmap('viridis')
+  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  axmin = -0.3
+  axmax = 0.3
+  aymin = -0.3
+  aymax = 0.3
+  xym = [axmin, axmax, aymin, aymax]
+  skill_colors = [skill_cmap.colors[i%len(skill_cmap.colors)] for i in skill_all]
+  for i in range(n_sample):
+    show_sa_single(axs[i], skill_all[i], state_seqs_to_plot[i], action_seqs_to_plot[i], 
+                   edges, keypoint_colors, skill_colors[i], axspine_width=10, xym=xym)
+
+
+def show_sa_single(ax, syllable, state, action, edges, keypoint_colors, syllable_color, axspine_width=10, xym=[-0.3,0.3,-0.3,0.3]):
+  show_s(ax, state, edges, keypoint_colors)
+  show_a(ax, state, action)
+  ax.set_title(f'{syllable}', fontsize=20)
+  ax.set_xlim(xym[0], xym[1])
+  ax.set_ylim(xym[2], xym[3])
+  ax.set_xticks([])
+  ax.set_yticks([])
+  set_ax_color_width(ax, syllable_color, axspine_width)
+
+def show_s(ax, state_seq, edges, keypoint_colors):
+  # state_seq: [n_bodyparts, 2]
+  for p1, p2 in edges:
+    ax.plot(
+        *state_seq[(p1, p2), :].T,
+        color=keypoint_colors[p1],
+        linewidth=5.0, zorder=0)
+  ax.scatter(
+      *state_seq.T,
+      c=keypoint_colors,
+      s=100, zorder=0)
+def show_a(ax, state_seq, action_seq):
+  n_bodyparts = state_seq.shape[0]
+  for k in range(n_bodyparts):
+    ax.quiver(state_seq[k, 0], state_seq[k, 1], 
+              action_seq[k, 0], action_seq[k, 1], 
+              angles='xy', scale_units='xy', scale=0.07, color='r', zorder=1)
+def set_ax_color_width(ax, color, linewidth):
+  # ax.axis('off')
+  for spine in ax.spines.values():
+    spine.set_color(color)
+    spine.set_linewidth(linewidth)
+
+def agent_likelihood_fn(agent, state, action, task, u_matrix):
+  # state: [batch, state_dim]
+  # action: [batch, action_dim]
+  # u_matrix: [batch, feature_dim]
+  f_phi = agent.critic(agent.phi(torch.concat([state, action], -1)))
+  q = torch.sum(f_phi * u_matrix, dim=-1)
+  # z_phi = agent.phi(torch.concat([state, action], -1))
+  # q = torch.sum(z_phi * u_matrix, dim=-1)
+  return q
+
+
+def linear_loglikelihood(state, action, task, lr):
+  # print('lr:', type(lr))
+  lr_coef = torch.FloatTensor(lr['coef_matrix'])
+  lr_intercept = torch.FloatTensor(lr['intercept_matrix'])
+  lr_var = torch.FloatTensor(lr['var_matrix'])
+  # print('lr_coef:', lr_coef.shape, 'lr_intercept:', lr_intercept.shape, 'lr_var:', lr_var.shape)
+  n_task = lr_coef.shape[0]
+  assert lr_coef.shape == (n_task, state.shape[-1], action.shape[-1])
+  assert lr_intercept.shape == (n_task, action.shape[-1],)
+  assert lr_var.shape == (n_task, action.shape[-1],)
+  task = task.squeeze(-1).long()
+  linear_coef_matrix = lr_coef[task]
+  linear_intercept_matrix = lr_intercept[task]
+  linear_var_matrix = lr_var[task]
+  # batch_size, n_action_dim, bins, action_dim, state_dim = linear_coef_matrix.shape
+  # print('state:', state.shape, 'linear_coef_matrix:', linear_coef_matrix.shape)
+  pred_action = torch.matmul(state.unsqueeze(-2), torch.transpose(linear_coef_matrix, -1, -2)).squeeze(-2) + linear_intercept_matrix
+  ll = - 0.5 * (torch.square(pred_action - action)) / linear_var_matrix
+  # assert ll.shape == (batch_size, n_action_dim, bins, action_dim) 
+  return ll.sum(-1)
+
+def cal_plot_auc(state, action, task, u_matrix, dataset, agent, batch_size, save_path):
+  sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
+  state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
+  pos_logll = agent_likelihood_fn(agent, state, action, task, u_matrix).detach().cpu().numpy()
+  neg_logll = agent_likelihood_fn(agent, state, action_2, task, u_matrix).detach().cpu().numpy()
+  lr = pickle.load(open('./kms/linear_all.pkl', 'rb'))
+  positive_logll_linear = linear_loglikelihood(state, action, task, lr).detach().cpu().numpy()
+  negative_logll_linear = linear_loglikelihood(state, action_2, task, lr).detach().cpu().numpy()
+  auc_agent, auc_linear = plot_auc(pos_logll, neg_logll, positive_logll_linear, negative_logll_linear, save_path)
+  fig, ax = plt.subplots(1, 2, figsize=(6, 3))
+  ax[0].hist(pos_logll, bins=20, alpha=0.6, density=True, color='orange')
+  ax[0].hist(neg_logll, bins=20, alpha=0.6, density=True, color='g')
+  ax[0].set_title(f'agent, auc={auc_agent:.4f}')
+  ax[1].hist(positive_logll_linear, bins=20, alpha=0.6, density=True, color='orange')
+  ax[1].hist(negative_logll_linear, bins=20, alpha=0.6, density=True, color='g')
+  ax[1].set_title(f'linear, auc={auc_linear:.4f}')
+  save_fig(save_path.replace('auc.pdf', 'hist.png'))
+  return auc_agent, auc_linear
+
+def plot_auc(positive_logll, negative_logll, pos_lr_logll, neg_lr_logll, save_path):
+  y_agent_true = np.concatenate([np.ones_like(positive_logll), np.zeros_like(negative_logll)])
+  y_lr_true = np.concatenate([np.ones_like(pos_lr_logll), np.zeros_like(neg_lr_logll)])
+  auc_agent = roc_auc_score(y_agent_true, np.concatenate([positive_logll, negative_logll]))
+  auc_lr = roc_auc_score(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  fig, ax = plt.subplots(1,1, figsize=(3.2,3))
+
+  fpr1, tpr1, _ = roc_curve(y_agent_true, np.concatenate([positive_logll, negative_logll]))
+  fpr2, tpr2, _ = roc_curve(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  ax.plot(fpr1, tpr1, color='orange', label=f'SKIL, AUC:{auc_agent:.4f}')
+  ax.plot(fpr2, tpr2, color='g', label=f'linear, AUC:{auc_lr:.4f}')
+  ax.legend()
+  ax.plot([0, 1], [0, 1], color='k', linestyle='--')
+  ax.set_xlabel('False Positive Rate')
+  ax.set_ylabel('True Positive Rate')
+  # ax.set_title(f'AUC: SKIL, Linear')
+  # ax[1].bar(['SKIL', 'linear'], [auc_agent, auc_lr], color=['orange', 'g'])
+  # ax[1].set_ylabel('AUC')
+  plt.subplots_adjust(left=0.2, right=0.99, bottom=0.2, top=0.95)
+  save_fig(f'{save_path}', dpi=400)
+  print(save_path)
+  return auc_agent, auc_lr
+
+def plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, feature_dim, save_path):
+  initial_q = torch.sum(initial_f_phi_matrix[0] * initial_u, dim=-1).sum()
+  optimized_q = torch.sum(f_phi_matrix[0] * u_matrix, dim=-1).sum()
+  fig, ax = plt.subplots(2,2, figsize=(10,10))
+  ax = ax.flatten()
+  initial_u_numpy = initial_u.detach().cpu().numpy()
+  u_matrix_numpy = u_matrix.detach().cpu().numpy()
+  for j in range(feature_dim):
+    ax[0].plot(initial_u_numpy[:,j], label=f'{j}')
+  ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
+  for j in range(feature_dim):
+    ax[2].plot(u_matrix_numpy[:,j], label=f'{j}')
+  ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
+  cor = np.corrcoef(initial_u_numpy.flatten(), u_matrix_numpy.flatten())
+  ax[0].legend()
+  ax[2].legend()
+  ax[0].set_title(f'initial u, q: {initial_q:.4f}') 
+  ax[2].set_title(f'optimized u, q: {optimized_q:.4f}')
+  ax[1].set_title(f'initial f_phi, cor: {cor[0,1]:.4f}')
+  print('initial u:', np.argmax(initial_u_numpy, axis=1))
+  print('u_matrix:', np.argmax(u_matrix_numpy, axis=1))
+  save_fig(save_path)
+  np.save('./kms/u_matrix.npy', u_matrix_numpy)

@@ -39,7 +39,7 @@ class Finetune_Agent():
         self.dataset = dataset
         self.agent = spedersacagent
         self.device = args.device
-    def fit_soft_syllable_batch(self, times=20):
+    def fit_soft_syllable_batch(self, times=250):
         dataset = self.dataset
         agent = self.agent
         args = self.args
@@ -56,6 +56,7 @@ class Finetune_Agent():
         label = torch.zeros((sample_len, n_contrastive_sample+1))
         label[:,0] = 1
         label.requires_grad = False
+        file_path = f'./kms/fit_soft_syllable_batch.txt'
         for k in range(times):
             sample_idx = np.random.randint(0, dataset.size-sample_len) + np.arange(sample_len)
             state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
@@ -70,7 +71,12 @@ class Finetune_Agent():
             action_2 = action_2.reshape(sample_len, n_contrastive_sample, agent.action_dim)
             action_1 = action.reshape(sample_len, 1, agent.action_dim)
             action_all = torch.concat([action_1, action_2], dim=1)
+            # mle
             state_all = state.reshape(sample_len, 1, agent.state_dim).repeat(1, n_contrastive_sample+1, 1)
+            # map
+            # state_1 = state.reshape(sample_len, 1, agent.state_dim)
+            # state_2 = state_2.reshape(sample_len, n_contrastive_sample, agent.state_dim)
+            # state_all = torch.concat([state_1, state_2], dim=1)
             s_a = torch.concat([state_all, action_all], dim=-1)
             z_phi = agent.phi(s_a).detach()
             assert z_phi.shape == (sample_len, n_contrastive_sample+1, agent.feature_dim)
@@ -113,5 +119,7 @@ class Finetune_Agent():
             neg_logll_lr[k] = negative_logll_linear
             pos_logll[k] = positive_logll
             neg_logll[k] = negative_logll
+            with open(file_path, 'a') as f:
+                f.write(f'iter {k}, pos_logll: {positive_logll}, neg_logll: {negative_logll}, pos_logll_lr: {positive_logll_linear}, neg_logll_lr: {negative_logll_linear}\n')
         plot_auc(pos_logll, neg_logll, pos_logll_lr, neg_logll_lr, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc.pdf')
 

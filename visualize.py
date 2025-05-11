@@ -113,11 +113,11 @@ def cal_action_ll_batch(state, action, task, likelihood_fn, batch_size=256, bins
 def fit_soft_syllable(args, dataset, agent):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   np.random.seed(3)
-  sample_len = 25
+  sample_len = 250
   n_sample = 16
   z_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
   for i in range(n_sample):
-    sample_idx = np.random.randint(0, dataset.size) + np.arange(sample_len)
+    sample_idx = np.random.randint(0, dataset.size-sample_len) + np.arange(sample_len)
     state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
     if i == 0:
       sample_idx = 68290 + np.arange(sample_len)
@@ -132,14 +132,15 @@ def fit_soft_syllable(args, dataset, agent):
       initial_state = state.clone().detach()
       initial_task = task.clone().detach()
       initial_action = action.clone().detach()
-    z_phi = agent.phi(torch.concat([state, action], -1))
+    z_phi = agent.phi(torch.concat([initial_state, action], -1))
     z_phi_matrix[i] = z_phi
   # u_optimizer = torch.optim.Adam([u_matrix]+list(agent.critic.parameters()), lr=1e-4)
+  print('init_state:', initial_state.shape)
   u_matrix = torch.randn_like(u_matrix).requires_grad_()
   u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
   critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
   # step = 50000
-  iteration = 1
+  iteration = 50
   n_step = 1000
   label = torch.zeros((sample_len, n_sample))
   label[:,0] = 1
@@ -177,8 +178,11 @@ def fit_soft_syllable(args, dataset, agent):
   torch.save(agent.critic.state_dict(), f'./kms/critic_16.pth')  
   print('./kms/critic_16.pth')
   average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
-  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar},
-              open(f'./kms/average_state_action_ar.pkl', 'wb'))
+  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
+               'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
+               'u_matrix': u_matrix.detach().numpy()},
+              open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
+  print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
   # average_state_ar = average_action_ar = None
   pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
                  average_state_ar, average_action_ar,
@@ -2422,6 +2426,7 @@ if __name__ == "__main__":
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   # fit_soft_syllable_batch(args, replay_buffer, agent)
   fit_soft_syllable(args, replay_buffer, agent)
+  # pair_gif_and_u(None, None, None, None, None, None)
   # perturb_action(args, replay_buffer, agent)
   # assigned_action_to_phi(args, replay_buffer, agent)
   # collect_log_prob_lr_all(args, replay_buffer, agent)

@@ -35,6 +35,8 @@ from scipy.special import kl_div
 from sklearn.metrics import roc_auc_score, roc_curve
 from matplotlib.gridspec import GridSpec
 import moviepy.editor as mp
+from matplotlib.animation import FFMpegWriter
+
 
 def convert_gif_to_mp4(save_path):
   clip = mp.VideoFileClip(save_path)
@@ -128,11 +130,20 @@ def plot_gif_onefig(stateseq, save_path):
   save_fig(save_path)
 
 def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action_ar, save_path):
+  # fit_soft_info = pickle.load(open('./figure/kms/spedersac/A_f16_task78_ctrl_critic_nohidden/0/fit_soft_info.pkl', 'rb'))
+  # stateseq = fit_soft_info['initial_state']
+  # u_matrix = fit_soft_info['u_matrix']
+  # taskseq = fit_soft_info['initial_task']
+  # average_state_ar = fit_soft_info['average_state_ar']
+  # average_action_ar = fit_soft_info['average_action_ar']
+  # save_path = './figure/kms/spedersac/A_f16_task78_ctrl_critic_nohidden/0/pair_gif_and_u.gif'
   # stateseq: [timestep, state_dim]
   # u_matrix: [timestep, feature_dim]
   # taskseq: [timestep, 1]
   # average_state_ar: [feature_dim, state_dim]
   # average_action_ar: [feature_dim, action_dim]
+  writer = FFMpegWriter(fps=10)
+
   edges, state_name, n_dim = get_edges(stateseq.shape[-1])
   n_bodyparts = len(state_name)
   timestep = stateseq.shape[0]
@@ -177,80 +188,84 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
   ax1 = fig.add_axes([ax1_left/fig_width, ax1_bottom/fig_height, ax1_width/fig_width, ax1_height/fig_height])
   ax_kmslabel = fig.add_axes([ax_kmslabel_left/fig_width, ax_kmslabel_bottom/fig_height, ax_kmslabel_width/fig_width, ax_kmslabel_height/fig_height])
   ax_skill = [fig.add_axes([ax_skill_left[i]/fig_width, ax_skill_bottom/fig_height, ax_skill_width/fig_width, ax_skill_height/fig_height]) for i in range(n_skill_shown)]
-  ax_skill[1].set_title('5', fontsize=15, pad=8)
-  ax_skill[1].set_xlabel('Highest', fontsize=15, labelpad=12)
-  ax_skill[4].set_xlabel('Lowest', fontsize=15, labelpad=12)
+
   # set_ax_color_width(ax_skill[1], 'orange', 10)
   # set_ax_color_width(ax_skill[4], 'g', 10)
   ax_kmslabel.axis('off')
   ax0.axis('off')
   skill_cmap = plt.cm.get_cmap('Set1')
   rasters = []
-  for i in range(timestep):
-    ax0.clear()
-    ax1.clear()
-    ax_kmslabel.clear()
-    [ax_skill[i].clear() for i in range(n_skill_shown)]
-    ax0.set_xlim(axmin, axmax)
-    ax0.set_ylim(aymin, aymax)
-    ax1.set_xlim(0, u_matrix.shape[0])
-    ax1.set_ylim(u_matrix.min(), u_matrix.max())
-    ax_kmslabel.set_xlim(0, u_matrix.shape[0])
-    ax_kmslabel.set_ylim(0, 1)
-    for p1, p2 in edges:
-      ax0.plot(
-          *state_seq_to_plot[i, (p1, p2)].T,
-          color=keypoint_colors[p1],
-          linewidth=5.0,zorder=0)
-    ax0.scatter(
-        *state_seq_to_plot[i].T,
-        c=keypoint_colors,
-        s=100,zorder=1)
-    for j in range(u_matrix.shape[1]):
-      ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
-    ax1.vlines(i, ymin=u_matrix.min(), ymax=u_matrix.max(), color='black', linestyle='--')
-    ax1.set_ylim(u_matrix.min(), u_matrix.max())
-    ax1.legend(loc='upper right', fontsize=8)
-    ax1.set_xticks([])
-    u_matrix_idx = np.argsort(u_matrix, 1)
-    ax1.set_title(f'{i}, first:{u_matrix_idx[i,-1], u_matrix_idx[i,-2], u_matrix_idx[i,-3]}, \
-                  last:{u_matrix_idx[i,2], u_matrix_idx[i,1], u_matrix_idx[i,0]}')
-    
-    skill_idx_to_plot = np.array([u_matrix_idx[i, -1], u_matrix_idx[i, -2], u_matrix_idx[i, -3],
-                         u_matrix_idx[i, 2], u_matrix_idx[i, 1], u_matrix_idx[i, 0]])
-    state_all = average_state_ar[skill_idx_to_plot]
-    action_all = average_action_ar[skill_idx_to_plot]
-    show_sa_all(ax_skill, state_all, action_all, skill_idx_to_plot, skill_cmap)
-
-    ax_kmslabel.imshow(taskseq_to_plot.reshape(1,-1), aspect='auto', cmap='Set1',
-                       extent=[0, u_matrix.shape[0], 0, 1])
-    ax_kmslabel.set_yticks([])
-    ax_kmslabel.set_xticks([])
-    ax_kmslabel.set_xlabel('keymoseq label')
-    ax_kmslabel.vlines(i, ymin=0, ymax=1, color='black', linestyle='--')
-    # mark the task on the axis
-    task_transition = np.where(np.diff(taskseq_to_plot))[0]
-    task_unique_order = taskseq_to_plot[task_transition+1]
-    task_unique_order = np.concatenate(([taskseq_to_plot[0]], task_unique_order))
-    task_transition = np.concatenate(([0], task_transition, [taskseq_to_plot.shape[0]-1]))
-    for j in range(len(task_unique_order)):
-      xcoord = (task_transition[j] + task_transition[j+1]) / 2 + 0.5
-      ax_kmslabel.annotate(f'{int(task_unique_order[j])}', xy=(xcoord, 0.5),
-                        fontsize=14, ha='center', va='center')
-    rasters.append(rasterize_figure(fig))
-  pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
+  with writer.saving(fig, save_path.replace('.gif', '.mp4'), dpi=100):
+    for i in range(timestep):
+      print(i)
+      ax0.clear()
+      ax1.clear()
+      ax_kmslabel.clear()
+      [ax_skill[i].clear() for i in range(n_skill_shown)]
+      ax0.set_xlim(axmin, axmax)
+      ax0.set_ylim(aymin, aymax)
+      ax1.set_xlim(0, u_matrix.shape[0])
+      ax1.set_ylim(u_matrix.min(), u_matrix.max())
+      ax_kmslabel.set_xlim(0, u_matrix.shape[0])
+      ax_kmslabel.set_ylim(0, 1)
+      for p1, p2 in edges:
+        ax0.plot(
+            *state_seq_to_plot[i, (p1, p2)].T,
+            color=keypoint_colors[p1],
+            linewidth=5.0,zorder=0)
+      ax0.scatter(
+          *state_seq_to_plot[i].T,
+          c=keypoint_colors,
+          s=100,zorder=1)
+      for j in range(u_matrix.shape[1]):
+        ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
+      ax1.vlines(i, ymin=u_matrix.min(), ymax=u_matrix.max(), color='black', linestyle='--')
+      ax1.set_ylim(u_matrix.min(), u_matrix.max())
+      ax1.legend(loc='upper right', fontsize=8)
+      ax1.set_xticks([])
+      u_matrix_idx = np.argsort(u_matrix, 1)
+      ax1.set_title(f'{i}, first:{u_matrix_idx[i,-1], u_matrix_idx[i,-2], u_matrix_idx[i,-3]}, \
+                    last:{u_matrix_idx[i,2], u_matrix_idx[i,1], u_matrix_idx[i,0]}')
+      
+      skill_idx_to_plot = np.array([u_matrix_idx[i, -1], u_matrix_idx[i, -2], u_matrix_idx[i, -3],
+                          u_matrix_idx[i, 2], u_matrix_idx[i, 1], u_matrix_idx[i, 0]])
+      state_all = average_state_ar[skill_idx_to_plot]
+      action_all = average_action_ar[skill_idx_to_plot]
+      show_sa_all(ax_skill, state_all, action_all, skill_idx_to_plot, skill_cmap)
+      ax_skill[1].set_xlabel('Highest', fontsize=15, labelpad=12)
+      ax_skill[4].set_xlabel('Lowest', fontsize=15, labelpad=12)
+      ax_kmslabel.imshow(taskseq_to_plot.reshape(1,-1), aspect='auto', cmap='Set1',
+                        extent=[0, u_matrix.shape[0], 0, 1])
+      ax_kmslabel.set_yticks([])
+      ax_kmslabel.set_xticks([])
+      ax_kmslabel.set_xlabel('keymoseq label')
+      ax_kmslabel.vlines(i, ymin=0, ymax=1, color='black', linestyle='--')
+      # mark the task on the axis
+      task_transition = np.where(np.diff(taskseq_to_plot))[0]
+      task_unique_order = taskseq_to_plot[task_transition+1]
+      task_unique_order = np.concatenate(([taskseq_to_plot[0]], task_unique_order))
+      task_transition = np.concatenate(([0], task_transition, [taskseq_to_plot.shape[0]-1]))
+      for j in range(len(task_unique_order)):
+        xcoord = (task_transition[j] + task_transition[j+1]) / 2 + 0.5
+        ax_kmslabel.annotate(f'{int(task_unique_order[j])}', xy=(xcoord, 0.5),
+                          fontsize=14, ha='center', va='center')
+      # rasters.append(rasterize_figure(fig))
+      writer.grab_frame()
+  # writer.finish()
+  plt.close(fig)
+  # pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
   # Save the PIL Images as an animated GIF
-  if not os.path.exists(os.path.dirname(save_path)):
-    os.makedirs(os.path.dirname(save_path))
-  pil_images[0].save(
-      save_path,
-      save_all=True,
-      append_images=pil_images[1:],
-      duration=100,
-      loop=0,
-  )
-  print(save_path)
-  convert_gif_to_mp4(save_path)
+  # if not os.path.exists(os.path.dirname(save_path)):
+  #   os.makedirs(os.path.dirname(save_path))
+  # pil_images[0].save(
+  #     save_path,
+  #     save_all=True,
+  #     append_images=pil_images[1:],
+  #     duration=100,
+  #     loop=0,
+  # )
+  # print(save_path)
+  # convert_gif_to_mp4(save_path)
 
 def show_sa_all(axs, state_all, action_all, skill_all, skill_cmap):
   # state_all: [n_sample, state_dim]

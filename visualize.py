@@ -36,6 +36,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from plot import save_fig, get_edges, plot_gif_onefig, rasterize_figure, pair_gif_and_u, \
               plot_auc, plot_u, cal_plot_auc, agent_likelihood_fn, linear_loglikelihood
 from finetune_agent import Finetune_Agent
+from utils.util import MLP
 def sample_and_plot_gif_onefig(args, dataset, agent):
   state_dim = 16
   action_dim = 16
@@ -109,11 +110,36 @@ def cal_action_ll_batch(state, action, task, likelihood_fn, batch_size=256, bins
   return peak_score, higher_than_mean, higher_than_80quantile
 
 
+def plot_all_u(u_matrix_list, initial_u, save_path):
+  n = u_matrix_list.shape[0]
+  fig, ax = plt.subplots(n//50+1, 1, figsize=(10, 5*(n//50+1)))
+  for i in range(u_matrix_list.shape[2]):
+    ax[0].plot(initial_u[:, i].detach().cpu().numpy(), label=f'u_{i}')
+  for i in range(n):
+    if i % 50 == 0:
+      ax[i//50+1].set_title(f'iter {i}')
+      for j in range(u_matrix_list.shape[2]):
+        ax[i//50+1].plot(u_matrix_list[i, :, j].detach().cpu().numpy(), label=f'u_{j}')
+    # for j in range(u_matrix_list.shape[2]):
+    #   ax[i+1].plot(u_matrix_list[i, :, j].detach().cpu().numpy(), label=f'u_{j}')
+  save_fig(save_path)
+
+
+def fit_whole_dataset(args, dataset, agent):
+  finetune_agent = Finetune_Agent(args, dataset, agent)
+  u_vec = finetune_agent.fit_whole_dataset(critic_save_path = f'./kms/critic_16to512_whole.pth',
+                                           u_vec_save_path = f'./kms/u_vec_16to512_whole.npy')
+  finetune_agent.sample_plot_auc()
+
 
 def fit_soft_syllable(args, dataset, agent):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
+  device = 'cuda:0'
+  dataset = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
+  dataset.load_state_dict(torch.load('./kms/replay_buffer_all_normalized.pth'))
+  dataset = dataset.to(device)
   np.random.seed(3)
-  sample_len = 250
+  sample_len = 1000
   n_sample = 16
   z_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
   for i in range(n_sample):
@@ -121,49 +147,91 @@ def fit_soft_syllable(args, dataset, agent):
     state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
     if i == 0:
       sample_idx = 68290 + np.arange(sample_len)
-      # sample_idx = 58600 + np.arange(sample_len)
+      # sample_idx = 38772 + np.arange(sample_len)
       # sample_idx = 4610 + np.arange(sample_len)
+      # sample_idx = 99596 + np.arange(sample_len)
       state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
       print('sample_idx:', sample_idx)
-      print('task:', task)
+      print('task:', task.reshape(-1))
       task_onehot = F.one_hot(task.reshape(-1).long(), num_classes=agent.n_task).float()
       initial_u = agent.u(task_onehot)
       u_matrix = initial_u.clone().detach().requires_grad_() # [sample_len, feature_dim]
       initial_state = state.clone().detach()
       initial_task = task.clone().detach()
       initial_action = action.clone().detach()
+      initial_sample_idx = sample_idx[0]
     z_phi = agent.phi(torch.concat([initial_state, action], -1))
     z_phi_matrix[i] = z_phi
+  z_phi_matrix = z_phi_matrix.to(device)
   # u_optimizer = torch.optim.Adam([u_matrix]+list(agent.critic.parameters()), lr=1e-4)
-  print('init_state:', initial_state.shape)
-  u_matrix = torch.randn_like(u_matrix).requires_grad_()
+  # print('init_state:', initial_state.shape)
+  phi_dim = 256
+  u_matrix = torch.randn((u_matrix.shape[0], phi_dim)).to(device).requires_grad_()
+  # u_matrix = torch.FloatTensor(np.load('./kms/u_matrix_map_1000.npy')).requires_grad_()
+  # agent.critic.load_state_dict(torch.load(f'./kms/critic_16_map_1000.pth'))
+  initial_u = u_matrix.clone().detach()
+  # print('u_matrix:', u_matrix.shape)  
   u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
+  agent.critic = MLP(input_dim=agent.feature_dim,
+                                output_dim=phi_dim,
+                                hidden_dim=16,
+                                hidden_depth=0,
+                                bias=True,
+                                output_mod=nn.ELU()).to(device)
   critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
   # step = 50000
   iteration = 50
   n_step = 1000
-  label = torch.zeros((sample_len, n_sample))
+  label = torch.zeros((sample_len, n_sample)).to(device)
   label[:,0] = 1
   label.requires_grad = False
   z_phi_matrix = z_phi_matrix.detach()
   # f_phi_matrix = f_phi_matrix.detach()
   initial_f_phi_matrix = agent.critic(z_phi_matrix).detach()
+  u_matrix_list = torch.zeros((iteration, sample_len, phi_dim))
+
   def loss_fn(u_matrix, f_phi_matrix):
     Q = torch.sum(f_phi_matrix * u_matrix.unsqueeze(0), dim=-1).T
     assert Q.shape == label.shape
     loss_ctrl = nn.CrossEntropyLoss()(Q, label)
     neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 100
+    # neglogprior = (torch.diff(torch.diff(Q,dim=0),dim=0).abs()).mean() * 0.01
+
+    # Gaussian process
+    # sigma = 1
+    # l = 10
+    # coef = 1e-7
+    # t = torch.arange(u_matrix.shape[0])
+    # diff = t.reshape(1,-1) - t.reshape(-1,1)
+    # K = torch.exp(-diff**2/2/l**2) * sigma**2 + 1e-6*torch.eye(Q.shape[0])
+    # fig, ax = plt.subplots(1,1, figsize=(5,5))
+    # im = ax.imshow(K.detach().cpu().numpy(), cmap='hot', interpolation='nearest')  
+    # ax.set_title('kernel matrix')
+    # fig.colorbar(im, ax=ax, label='Intensity')
+    # save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/kernel_matrix.png')
+    # K_inv = torch.linalg.inv(K)
+    # neglogprior += torch.diag(u_matrix.T @ K_inv @ u_matrix).mean()*coef
+
+
     loss_reg = (u_matrix.abs()).mean() * 1
     # loss_reg = torch.zeros_like(neglogprior)
     loss = loss_ctrl + neglogprior + loss_reg
     return loss, loss_ctrl, neglogprior, loss_reg
   for i in range(iteration):
+    if i % 10 == 0:
+      fig, axis = plt.subplots(1, 1, figsize=(15, 5))
+      for j in range(u_matrix.shape[1]):
+        axis.plot(u_matrix[:, j].detach().cpu().numpy(), label=f'{j}')
+      axis.set_title(f'iter {i}')
+      save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_{i}.png')
+
     f_phi_matrix = agent.critic(z_phi_matrix).detach()
     for j in range(n_step):
       loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
       u_optimizer.zero_grad()
       loss.backward()
       u_optimizer.step()
+    u_matrix_list[i] = u_matrix.detach()
     for j in range(n_step):
       f_phi_matrix = agent.critic(z_phi_matrix)
       loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
@@ -172,23 +240,44 @@ def fit_soft_syllable(args, dataset, agent):
       critic_optimizer.step()
 
     print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
+    fig, axis = plt.subplots(1, 1, figsize=(5, 5))
+
   f_phi_matrix = agent.critic(z_phi_matrix).detach()
+  print('f_phi_matrix:', f_phi_matrix[0])
+  # plot_all_u(u_matrix_list, initial_u, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_all.png')
   # plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, agent.feature_dim, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png')
+  # np.save('./kms/u_matrix_map_1000.npy', u_matrix.detach().numpy())
   # compare_action_ll(agent, initial_state, initial_action, initial_task, u_matrix, batch_size=sample_len)
-  torch.save(agent.critic.state_dict(), f'./kms/critic_16.pth')  
-  print('./kms/critic_16.pth')
-  average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
-  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
-               'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
-               'u_matrix': u_matrix.detach().numpy()},
-              open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
-  print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
+  # torch.save(agent.critic.state_dict(), f'./kms/critic_16_map_1000.pth')  
+  # print('./kms/critic_16_map.pth')
+  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
+  # pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
+              #  'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
+              #  'u_matrix': u_matrix.detach().numpy()},
+              # open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
+  # print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
   # average_state_ar = average_action_ar = None
-  pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
-                 average_state_ar, average_action_ar,
-                 f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u.gif')
-  # auc = cal_plot_auc(initial_state, initial_action, initial_task, 
-                # u_matrix, dataset, agent, batch_size=sample_len, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc.pdf')
+  # pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
+  #                average_state_ar, average_action_ar,
+  #                f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u_{initial_sample_idx}_new.mp4',
+  #                dpi=100)
+  times = 50
+  auc_agents = np.zeros((times, ))
+  auc_linears = np.zeros((times, ))
+  for i in range(times):
+    auc_agent, auc_linear = cal_plot_auc(initial_state, initial_action, initial_task, initial_u, 
+                  u_matrix, dataset, agent, batch_size=sample_len, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_longclip_{initial_sample_idx}_map.pdf',
+                  seed=i, device=device)
+    auc_agents[i] = auc_agent
+    auc_linears[i] = auc_linear
+  fig, axis = plt.subplots(1, 1, figsize=(5, 5))
+  axis.errorbar(np.arange(1), auc_agents.mean(), yerr=auc_agents.std(), label='agent')
+  axis.errorbar(np.arange(1)+1, auc_linears.mean(), yerr=auc_linears.std(), label='linear')
+  axis.set_title(f'auc: {auc_agents.mean():.4f} +/- {auc_agents.std():.4f}, linear: {auc_linears.mean():.4f} +/- {auc_linears.std():.4f}')
+  axis.legend()
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_longclip_map.png')
+
+
 
 
 def fit_soft_syllable_batch(args, dataset, agent):
@@ -312,83 +401,83 @@ def show_state_action_field(state_seq, action_seq, save_path):
   rotating_a = np.matmul(action_seq.reshape(n_sample, -1, 2), vs_calib)
   s_all = rotating_s.reshape(n_sample, agent.state_dim)
   a_all = rotating_a.reshape(n_sample, agent.action_dim)
-
-  n_syllable = 10
-  state_seqs_to_plot = s_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
-  action_seqs_to_plot = a_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
-  cmap = plt.cm.get_cmap('viridis')
-  keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
-  axmin = -0.3
-  axmax = 0.3
-  aymin = -0.3
-  aymax = 0.3
-  for j in range(n_syllable):
-    for p1, p2 in edges:
-      axis[j//4, j%4].plot(
-          *state_seqs_to_plot[j, (p1, p2)].T,
-          color=keypoint_colors[p1],
-          linewidth=5.0, zorder=0)
-    axis[j//4, j%4].scatter(
-        *state_seqs_to_plot[j].T,
-        c=keypoint_colors,
-        s=100, zorder=0)
-    axis[j//4, j%4].set_title(f'{j}', fontsize=30)
-    axis[j//4, j%4].axis('off')
-    axis[j//4, j%4].set_xlim(axmin, axmax)
-    axis[j//4, j%4].set_ylim(aymin, aymax)
-    for k in range(n_bodyparts):
-      axis[j//4, j%4].quiver(state_seqs_to_plot[j, k, 0], state_seqs_to_plot[j, k, 1], 
-                            action_seqs_to_plot[j, k, 0], action_seqs_to_plot[j, k, 1], 
-                            angles='xy', scale_units='xy', scale=0.2, color='r', zorder=1)
   average_state = s_all.mean(axis=0).reshape(n_bodyparts, 2)
   average_action = a_all.mean(axis=0).reshape(n_bodyparts, 2)
-  j += 1
+  # whether to show the typical (s,a) of a skill
+  # n_syllable = 10
+  # state_seqs_to_plot = s_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
+  # action_seqs_to_plot = a_all.reshape(-1, n_bodyparts, 2)[:n_syllable]
+  # cmap = plt.cm.get_cmap('viridis')
+  # keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
+  # axmin = -0.3
+  # axmax = 0.3
+  # aymin = -0.3
+  # aymax = 0.3
+  # for j in range(n_syllable):
+  #   for p1, p2 in edges:
+  #     axis[j//4, j%4].plot(
+  #         *state_seqs_to_plot[j, (p1, p2)].T,
+  #         color=keypoint_colors[p1],
+  #         linewidth=5.0, zorder=0)
+  #   axis[j//4, j%4].scatter(
+  #       *state_seqs_to_plot[j].T,
+  #       c=keypoint_colors,
+  #       s=100, zorder=0)
+  #   axis[j//4, j%4].set_title(f'{j}', fontsize=30)
+  #   axis[j//4, j%4].axis('off')
+  #   axis[j//4, j%4].set_xlim(axmin, axmax)
+  #   axis[j//4, j%4].set_ylim(aymin, aymax)
+  #   for k in range(n_bodyparts):
+  #     axis[j//4, j%4].quiver(state_seqs_to_plot[j, k, 0], state_seqs_to_plot[j, k, 1], 
+  #                           action_seqs_to_plot[j, k, 0], action_seqs_to_plot[j, k, 1], 
+  #                           angles='xy', scale_units='xy', scale=0.2, color='r', zorder=1)
+
+  # j += 1
   # draw multiple state and action in one figure
-  for p1, p2 in edges:
-    axis[j//4, j%4].plot(
-        *average_state[(p1, p2),:].T,
-        color=keypoint_colors[p1],
-        linewidth=5.0, zorder=0)
-  axis[j//4, j%4].scatter(
-      *average_state.T,
-      c=keypoint_colors,
-      s=100, zorder=0)
-  axis[j//4, j%4].set_title(f'average', fontsize=30)
-  axis[j//4, j%4].axis('off')
-  axis[j//4, j%4].set_xlim(axmin, axmax)
-  axis[j//4, j%4].set_ylim(aymin, aymax)
-  for k in range(n_bodyparts):
-    axis[j//4, j%4].quiver(average_state[k, 0], average_state[k, 1], 
-                          average_action[k, 0], average_action[k, 1], 
-                          angles='xy', scale_units='xy', scale=0.07, color='r', zorder=1)
-  j += 1
-  alpha = 0.01
-  for l in range(n_sample):
-    for p1, p2 in edges:
-      axis[j//4, j%4].plot(
-          *rotating_s[l, (p1, p2)].T,
-          color=keypoint_colors[p1],
-          linewidth=5.0, alpha=alpha)
-    axis[j//4, j%4].scatter(
-        *rotating_s[l].T,
-        c=keypoint_colors,
-        s=100, alpha=alpha)
-    # axis[j//4, j%4].set_title(f'{l}', fontsize=30)
-    axis[j//4, j%4].axis('off')
-    axis[j//4, j%4].set_xlim(axmin, axmax)
-    axis[j//4, j%4].set_ylim(aymin, aymax)
-    for k in range(n_bodyparts):
-      axis[j//4, j%4].quiver(rotating_s[l, k, 0], rotating_s[l, k, 1], 
-                            rotating_a[l, k, 0], rotating_a[l, k, 1], 
-                            angles='xy', scale_units='xy', scale=0.2, color='r', alpha=alpha*5)
-  plt.suptitle('state and action field')
-  plt.tight_layout()
-  if not os.path.exists(os.path.dirname(save_path)):
-    os.makedirs(os.path.dirname(save_path))
-  plt.savefig(save_path)
-  plt.close()
-  print(save_path)
-  plot_a_distribution(rotating_a, save_path.replace('.png', '_a_distribution.png'), state_name)
+  # for p1, p2 in edges:
+  #   axis[j//4, j%4].plot(
+  #       *average_state[(p1, p2),:].T,
+  #       color=keypoint_colors[p1],
+  #       linewidth=5.0, zorder=0)
+  # axis[j//4, j%4].scatter(
+  #     *average_state.T,
+  #     c=keypoint_colors,
+  #     s=100, zorder=0)
+  # axis[j//4, j%4].set_title(f'average', fontsize=30)
+  # axis[j//4, j%4].axis('off')
+  # axis[j//4, j%4].set_xlim(axmin, axmax)
+  # axis[j//4, j%4].set_ylim(aymin, aymax)
+  # for k in range(n_bodyparts):
+  #   axis[j//4, j%4].quiver(average_state[k, 0], average_state[k, 1], 
+  #                         average_action[k, 0], average_action[k, 1], 
+  #                         angles='xy', scale_units='xy', scale=0.07, color='r', zorder=1)
+  # j += 1
+  # alpha = 0.01
+  # for l in range(n_sample):
+  #   for p1, p2 in edges:
+  #     axis[j//4, j%4].plot(
+  #         *rotating_s[l, (p1, p2)].T,
+  #         color=keypoint_colors[p1],
+  #         linewidth=5.0, alpha=alpha)
+  #   axis[j//4, j%4].scatter(
+  #       *rotating_s[l].T,
+  #       c=keypoint_colors,
+  #       s=100, alpha=alpha)
+  #   axis[j//4, j%4].axis('off')
+  #   axis[j//4, j%4].set_xlim(axmin, axmax)
+  #   axis[j//4, j%4].set_ylim(aymin, aymax)
+  #   for k in range(n_bodyparts):
+  #     axis[j//4, j%4].quiver(rotating_s[l, k, 0], rotating_s[l, k, 1], 
+  #                           rotating_a[l, k, 0], rotating_a[l, k, 1], 
+  #                           angles='xy', scale_units='xy', scale=0.2, color='r', alpha=alpha*5)
+  # plt.suptitle('state and action field')
+  # plt.tight_layout()
+  # if not os.path.exists(os.path.dirname(save_path)):
+  #   os.makedirs(os.path.dirname(save_path))
+  # plt.savefig(save_path)
+  # plt.close()
+  # print(save_path)
+  # plot_a_distribution(rotating_a, save_path.replace('.png', '_a_distribution.png'), state_name)
   return average_state.reshape(-1), average_action.reshape(-1)
   # plot_next_s_all(next_s_all, save_path.replace('.png', '_next_s.png'))
 
@@ -478,7 +567,7 @@ def collect_action_to_phi(args, dataset, agent, dimension):
   # fig, ax = plt.subplots(1,1, figsize=(10,10))
   # ax.hist(z_phi[:,dimension], bins=20, alpha=0.6, density=True, color='orange')
   # save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/phi/{dimension}.png')
-  print('state_seq:', state_seq.shape, 'action_seq:', action_seq.shape)
+  # print('state_seq:', state_seq.shape, 'action_seq:', action_seq.shape)
   average_state, average_action = show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
   return average_state, average_action
 
@@ -488,7 +577,7 @@ def collect_action_to_phi_all(args, dataset, agent):
   average_action_ar = np.zeros((agent.feature_dim, agent.action_dim))
   for i in range(agent.feature_dim):
     average_state_ar[i], average_action_ar[i] = collect_action_to_phi(args, dataset, agent, i)
-  show_sa(average_state_ar, average_action_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi_average.png')
+  # show_sa(average_state_ar, average_action_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi_average.png')
   return average_state_ar, average_action_ar
 
 def action_loglikelihood_multiple_syllables(args, dataset, agent):
@@ -2425,7 +2514,8 @@ if __name__ == "__main__":
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   # fit_soft_syllable_batch(args, replay_buffer, agent)
-  fit_soft_syllable(args, replay_buffer, agent)
+  # fit_soft_syllable(args, replay_buffer, agent)
+  fit_whole_dataset(args, replay_buffer, agent)
   # pair_gif_and_u(None, None, None, None, None, None)
   # perturb_action(args, replay_buffer, agent)
   # assigned_action_to_phi(args, replay_buffer, agent)

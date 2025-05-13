@@ -129,7 +129,7 @@ def plot_gif_onefig(stateseq, save_path):
     axis.set_ylim(aymin, aymax)
   save_fig(save_path)
 
-def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action_ar, save_path):
+def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action_ar, save_path, dpi):
   # fit_soft_info = pickle.load(open('./figure/kms/spedersac/A_f16_task78_ctrl_critic_nohidden/0/fit_soft_info.pkl', 'rb'))
   # stateseq = fit_soft_info['initial_state']
   # u_matrix = fit_soft_info['u_matrix']
@@ -195,9 +195,8 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
   ax0.axis('off')
   skill_cmap = plt.cm.get_cmap('Set1')
   rasters = []
-  with writer.saving(fig, save_path.replace('.gif', '.mp4'), dpi=100):
+  with writer.saving(fig, save_path, dpi=dpi):
     for i in range(timestep):
-      print(i)
       ax0.clear()
       ax1.clear()
       ax_kmslabel.clear()
@@ -253,6 +252,7 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
       writer.grab_frame()
   # writer.finish()
   plt.close(fig)
+  print(save_path)
   # pil_images = [Image.fromarray(np.uint8(img)) for img in rasters]
   # Save the PIL Images as an animated GIF
   # if not os.path.exists(os.path.dirname(save_path)):
@@ -353,15 +353,31 @@ def linear_loglikelihood(state, action, task, lr):
   # assert ll.shape == (batch_size, n_action_dim, bins, action_dim) 
   return ll.sum(-1)
 
-def cal_plot_auc(state, action, task, u_matrix, dataset, agent, batch_size, save_path):
+def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch_size, save_path, seed, device):
+  agent.critic = agent.critic.to(device)
+  agent.phi = agent.phi.to(device)
+  initial_u = initial_u.to(device)
+  u_matrix = u_matrix.to(device)
+  state = state.to(device)
+  action = action.to(device)
+  task = task.to(device)
+  np.random.seed(seed)
   sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
   state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
+  action_2 = action_2.to(device)
   pos_logll = agent_likelihood_fn(agent, state, action, task, u_matrix).detach().cpu().numpy()
   neg_logll = agent_likelihood_fn(agent, state, action_2, task, u_matrix).detach().cpu().numpy()
+  pos_logll_initial = agent_likelihood_fn(agent, state, action, task, initial_u).detach().cpu().numpy()
+  neg_logll_initial = agent_likelihood_fn(agent, state, action_2, task, initial_u).detach().cpu().numpy()
   lr = pickle.load(open('./kms/linear_all.pkl', 'rb'))
+  state = state.detach().cpu()
+  action = action.detach().cpu()
+  task = task.detach().cpu()
+  action_2 = action_2.detach().cpu()
   positive_logll_linear = linear_loglikelihood(state, action, task, lr).detach().cpu().numpy()
   negative_logll_linear = linear_loglikelihood(state, action_2, task, lr).detach().cpu().numpy()
-  auc_agent, auc_linear = plot_auc(pos_logll, neg_logll, positive_logll_linear, negative_logll_linear, save_path)
+  auc_agent, auc_linear = plot_auc(pos_logll, neg_logll, positive_logll_linear, negative_logll_linear, 
+                                   pos_logll_initial, neg_logll_initial, save_path)
   fig, ax = plt.subplots(1, 2, figsize=(6, 3))
   ax[0].hist(pos_logll, bins=20, alpha=0.6, density=True, color='orange')
   ax[0].hist(neg_logll, bins=20, alpha=0.6, density=True, color='g')
@@ -369,20 +385,24 @@ def cal_plot_auc(state, action, task, u_matrix, dataset, agent, batch_size, save
   ax[1].hist(positive_logll_linear, bins=20, alpha=0.6, density=True, color='orange')
   ax[1].hist(negative_logll_linear, bins=20, alpha=0.6, density=True, color='g')
   ax[1].set_title(f'linear, auc={auc_linear:.4f}')
-  save_fig(save_path.replace('auc.pdf', 'hist.png'))
+  save_fig(save_path.replace('auc', 'hist'))
   return auc_agent, auc_linear
 
-def plot_auc(positive_logll, negative_logll, pos_lr_logll, neg_lr_logll, save_path):
+def plot_auc(positive_logll, negative_logll, pos_lr_logll, neg_lr_logll, initial_pos_logll, initial_neg_logll, save_path):
   y_agent_true = np.concatenate([np.ones_like(positive_logll), np.zeros_like(negative_logll)])
   y_lr_true = np.concatenate([np.ones_like(pos_lr_logll), np.zeros_like(neg_lr_logll)])
+  y_agent_initial = np.concatenate([np.ones_like(initial_pos_logll), np.zeros_like(initial_neg_logll)])
   auc_agent = roc_auc_score(y_agent_true, np.concatenate([positive_logll, negative_logll]))
   auc_lr = roc_auc_score(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  auc_agent_initial = roc_auc_score(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
   fig, ax = plt.subplots(1,1, figsize=(3.2,3))
 
   fpr1, tpr1, _ = roc_curve(y_agent_true, np.concatenate([positive_logll, negative_logll]))
   fpr2, tpr2, _ = roc_curve(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  fpr3, tpr3, _ = roc_curve(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
   ax.plot(fpr1, tpr1, color='orange', label=f'SKIL, AUC:{auc_agent:.4f}')
   ax.plot(fpr2, tpr2, color='g', label=f'linear, AUC:{auc_lr:.4f}')
+  ax.plot(fpr3, tpr3, color='b', label=f'initial, AUC:{auc_agent_initial:.4f}')
   ax.legend()
   ax.plot([0, 1], [0, 1], color='k', linestyle='--')
   ax.set_xlabel('False Positive Rate')
@@ -392,29 +412,27 @@ def plot_auc(positive_logll, negative_logll, pos_lr_logll, neg_lr_logll, save_pa
   # ax[1].set_ylabel('AUC')
   plt.subplots_adjust(left=0.2, right=0.99, bottom=0.2, top=0.95)
   save_fig(f'{save_path}', dpi=400)
-  print(save_path)
   return auc_agent, auc_lr
 
 def plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, feature_dim, save_path):
   initial_q = torch.sum(initial_f_phi_matrix[0] * initial_u, dim=-1).sum()
   optimized_q = torch.sum(f_phi_matrix[0] * u_matrix, dim=-1).sum()
-  fig, ax = plt.subplots(2,2, figsize=(10,10))
+  fig, ax = plt.subplots(2,1, figsize=(15,5))
   ax = ax.flatten()
   initial_u_numpy = initial_u.detach().cpu().numpy()
   u_matrix_numpy = u_matrix.detach().cpu().numpy()
   for j in range(feature_dim):
     ax[0].plot(initial_u_numpy[:,j], label=f'{j}')
-  ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
+  # ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
   for j in range(feature_dim):
-    ax[2].plot(u_matrix_numpy[:,j], label=f'{j}')
-  ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
+    ax[1].plot(u_matrix_numpy[:,j], label=f'{j}')
+  # ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
   cor = np.corrcoef(initial_u_numpy.flatten(), u_matrix_numpy.flatten())
   ax[0].legend()
-  ax[2].legend()
+  ax[1].legend()
   ax[0].set_title(f'initial u, q: {initial_q:.4f}') 
-  ax[2].set_title(f'optimized u, q: {optimized_q:.4f}')
-  ax[1].set_title(f'initial f_phi, cor: {cor[0,1]:.4f}')
+  ax[1].set_title(f'optimized u, q: {optimized_q:.4f}')
+  # ax[1].set_title(f'initial f_phi, cor: {cor[0,1]:.4f}')
   print('initial u:', np.argmax(initial_u_numpy, axis=1))
   print('u_matrix:', np.argmax(u_matrix_numpy, axis=1))
   save_fig(save_path)
-  np.save('./kms/u_matrix.npy', u_matrix_numpy)

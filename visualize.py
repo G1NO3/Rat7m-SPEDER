@@ -135,9 +135,6 @@ def fit_whole_dataset(args, dataset, agent):
 def fit_soft_syllable(args, dataset, agent):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   device = 'cuda:0'
-  dataset = buffer.ReplayBuffer(state_dim, action_dim, 1000000, device)
-  dataset.load_state_dict(torch.load('./kms/replay_buffer_all_normalized.pth'))
-  dataset = dataset.to(device)
   np.random.seed(3)
   sample_len = 1000
   n_sample = 16
@@ -151,8 +148,8 @@ def fit_soft_syllable(args, dataset, agent):
       # sample_idx = 4610 + np.arange(sample_len)
       # sample_idx = 99596 + np.arange(sample_len)
       state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
-      print('sample_idx:', sample_idx)
-      print('task:', task.reshape(-1))
+      # print('sample_idx:', sample_idx)
+      # print('task:', task.reshape(-1))
       task_onehot = F.one_hot(task.reshape(-1).long(), num_classes=agent.n_task).float()
       initial_u = agent.u(task_onehot)
       u_matrix = initial_u.clone().detach().requires_grad_() # [sample_len, feature_dim]
@@ -165,7 +162,7 @@ def fit_soft_syllable(args, dataset, agent):
   z_phi_matrix = z_phi_matrix.to(device)
   # u_optimizer = torch.optim.Adam([u_matrix]+list(agent.critic.parameters()), lr=1e-4)
   # print('init_state:', initial_state.shape)
-  phi_dim = 256
+  phi_dim = 64
   u_matrix = torch.randn((u_matrix.shape[0], phi_dim)).to(device).requires_grad_()
   # u_matrix = torch.FloatTensor(np.load('./kms/u_matrix_map_1000.npy')).requires_grad_()
   # agent.critic.load_state_dict(torch.load(f'./kms/critic_16_map_1000.pth'))
@@ -190,30 +187,32 @@ def fit_soft_syllable(args, dataset, agent):
   initial_f_phi_matrix = agent.critic(z_phi_matrix).detach()
   u_matrix_list = torch.zeros((iteration, sample_len, phi_dim))
 
+
+  sigma = 1
+  l = 10
+  coef = 1e-5
+  var_noise = 5e-5
+  t = torch.arange(u_matrix.shape[0]).to(device)
+  diff = t.reshape(1,-1) - t.reshape(-1,1)
+  K = torch.exp(-diff**2/2/l**2) * sigma**2 + var_noise*torch.eye(u_matrix.shape[0]).to(device)
+  K_inv = torch.linalg.inv(K)
+  fig, ax = plt.subplots(1,1, figsize=(5,5))
+  im = ax.imshow(K_inv.detach().cpu().numpy(), cmap='hot', interpolation='nearest')  
+  ax.set_title('kernel matrix')
+  fig.colorbar(im, ax=ax, label='Intensity')
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/kernel_matrix.png')
   def loss_fn(u_matrix, f_phi_matrix):
     Q = torch.sum(f_phi_matrix * u_matrix.unsqueeze(0), dim=-1).T
     assert Q.shape == label.shape
     loss_ctrl = nn.CrossEntropyLoss()(Q, label)
-    neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 100
+    # neglogprior = (torch.diff(u_matrix, dim=0)**2).mean() * 10
     # neglogprior = (torch.diff(torch.diff(Q,dim=0),dim=0).abs()).mean() * 0.01
 
     # Gaussian process
-    # sigma = 1
-    # l = 10
-    # coef = 1e-7
-    # t = torch.arange(u_matrix.shape[0])
-    # diff = t.reshape(1,-1) - t.reshape(-1,1)
-    # K = torch.exp(-diff**2/2/l**2) * sigma**2 + 1e-6*torch.eye(Q.shape[0])
-    # fig, ax = plt.subplots(1,1, figsize=(5,5))
-    # im = ax.imshow(K.detach().cpu().numpy(), cmap='hot', interpolation='nearest')  
-    # ax.set_title('kernel matrix')
-    # fig.colorbar(im, ax=ax, label='Intensity')
-    # save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/kernel_matrix.png')
-    # K_inv = torch.linalg.inv(K)
-    # neglogprior += torch.diag(u_matrix.T @ K_inv @ u_matrix).mean()*coef
+    neglogprior = torch.diag(u_matrix.T @ K_inv @ u_matrix).mean()*coef
 
 
-    loss_reg = (u_matrix.abs()).mean() * 1
+    loss_reg = (u_matrix.abs()).mean() * 0.5
     # loss_reg = torch.zeros_like(neglogprior)
     loss = loss_ctrl + neglogprior + loss_reg
     return loss, loss_ctrl, neglogprior, loss_reg
@@ -244,29 +243,36 @@ def fit_soft_syllable(args, dataset, agent):
 
   f_phi_matrix = agent.critic(z_phi_matrix).detach()
   print('f_phi_matrix:', f_phi_matrix[0])
+
+  root_filename = f'{initial_sample_idx}_{agent.feature_dim}to{phi_dim}_mle_gp'
   # plot_all_u(u_matrix_list, initial_u, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_all.png')
   # plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, agent.feature_dim, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix.png')
-  # np.save('./kms/u_matrix_map_1000.npy', u_matrix.detach().numpy())
+  np.save(f'./kms/u_matrix_{root_filename}.npy', u_matrix.detach().cpu().numpy())
   # compare_action_ll(agent, initial_state, initial_action, initial_task, u_matrix, batch_size=sample_len)
-  # torch.save(agent.critic.state_dict(), f'./kms/critic_16_map_1000.pth')  
+  torch.save(agent.critic.state_dict(), f'./kms/critic_{root_filename}.pth')  
   # print('./kms/critic_16_map.pth')
-  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent)
+  agent.critic = agent.critic.to('cpu')
+  u_matrix = u_matrix.to('cpu')
+  average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent, phi_dim)
+
   # pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
-              #  'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
-              #  'u_matrix': u_matrix.detach().numpy()},
-              # open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
+  #              'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
+  #              'u_matrix': u_matrix.detach().numpy()},
+  #             open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
   # print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
   # average_state_ar = average_action_ar = None
-  # pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
-  #                average_state_ar, average_action_ar,
-  #                f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/pair_gif_and_u_{initial_sample_idx}_new.mp4',
-  #                dpi=100)
-  times = 50
+  # print('u_matrix:', u_matrix.shape)
+  
+  pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
+                 average_state_ar, average_action_ar,
+                 f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/video_{root_filename}.mp4',
+                 dpi=100)
+  times = 1000
   auc_agents = np.zeros((times, ))
   auc_linears = np.zeros((times, ))
   for i in range(times):
     auc_agent, auc_linear = cal_plot_auc(initial_state, initial_action, initial_task, initial_u, 
-                  u_matrix, dataset, agent, batch_size=sample_len, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_longclip_{initial_sample_idx}_map.pdf',
+                  u_matrix, dataset, agent, batch_size=sample_len, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_{root_filename}.pdf',
                   seed=i, device=device)
     auc_agents[i] = auc_agent
     auc_linears[i] = auc_linear
@@ -275,7 +281,7 @@ def fit_soft_syllable(args, dataset, agent):
   axis.errorbar(np.arange(1)+1, auc_linears.mean(), yerr=auc_linears.std(), label='linear')
   axis.set_title(f'auc: {auc_agents.mean():.4f} +/- {auc_agents.std():.4f}, linear: {auc_linears.mean():.4f} +/- {auc_linears.std():.4f}')
   axis.legend()
-  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_longclip_map.png')
+  save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/auc_{root_filename}.png')
 
 
 
@@ -376,7 +382,7 @@ def show_state_action_field(state_seq, action_seq, save_path):
   # state_seqs_all: [syllable, state_dim]
   # action_seqs_all: [syllable, action_dim]
   edges, state_name, n_dim = get_edges(state_seq.shape[-1])
-  fig, axis = plt.subplots(3, 4, figsize=(20, 15))
+  # fig, axis = plt.subplots(3, 4, figsize=(20, 15))
   n_bodyparts = len(state_name)
   n_sample = state_seq.shape[0]
   
@@ -571,11 +577,11 @@ def collect_action_to_phi(args, dataset, agent, dimension):
   average_state, average_action = show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
   return average_state, average_action
 
-def collect_action_to_phi_all(args, dataset, agent):
-  agent.critic.load_state_dict(torch.load(f'./kms/critic_16.pth'))
-  average_state_ar = np.zeros((agent.feature_dim, agent.state_dim))
-  average_action_ar = np.zeros((agent.feature_dim, agent.action_dim))
-  for i in range(agent.feature_dim):
+def collect_action_to_phi_all(args, dataset, agent, phi_dim):
+  # agent.critic.load_state_dict(torch.load(f'./kms/critic_16.pth'))
+  average_state_ar = np.zeros((phi_dim, agent.state_dim))
+  average_action_ar = np.zeros((phi_dim, agent.action_dim))
+  for i in range(phi_dim):
     average_state_ar[i], average_action_ar[i] = collect_action_to_phi(args, dataset, agent, i)
   # show_sa(average_state_ar, average_action_ar, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi_average.png')
   return average_state_ar, average_action_ar
@@ -2514,8 +2520,8 @@ if __name__ == "__main__":
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   # fit_soft_syllable_batch(args, replay_buffer, agent)
-  # fit_soft_syllable(args, replay_buffer, agent)
-  fit_whole_dataset(args, replay_buffer, agent)
+  fit_soft_syllable(args, replay_buffer, agent)
+  # fit_whole_dataset(args, replay_buffer, agent)
   # pair_gif_and_u(None, None, None, None, None, None)
   # perturb_action(args, replay_buffer, agent)
   # assigned_action_to_phi(args, replay_buffer, agent)

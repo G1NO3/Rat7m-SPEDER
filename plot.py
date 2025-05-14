@@ -161,8 +161,8 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
   xmin = np.min(state_seq_to_plot[...,0], axis=(-1,-2))
   xmax = np.max(state_seq_to_plot[...,0], axis=(-1,-2))   
   indicator = np.where((aymin > ymin) | (aymax < ymax) | (axmin > xmin) | (axmax < xmax), 1, 0)
-  aymin = np.where(indicator, -0.6, aymin)
-  aymax = np.where(indicator, 0.7, aymax)
+  aymin = np.where(indicator, -0.5, aymin)
+  aymax = np.where(indicator, 0.8, aymax)
   axmin = np.where(indicator, -0.7, axmin)
   axmax = np.where(indicator, 0.6, axmax) 
   fig_width, fig_height = 16, 4+3
@@ -216,18 +216,26 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
           *state_seq_to_plot[i].T,
           c=keypoint_colors,
           s=100,zorder=1)
+      u_matrix_idx = np.argsort(u_matrix, 1)
+      skill_idx_to_plot = np.array([u_matrix_idx[i, -1], u_matrix_idx[i, -2], u_matrix_idx[i, -3],
+                      u_matrix_idx[i, 2], u_matrix_idx[i, 1], u_matrix_idx[i, 0]])
       for j in range(u_matrix.shape[1]):
-        ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
+        y = u_matrix[:,j]
+        # print((u_matrix_idx[:,-1]==j).shape)
+        y = np.where((u_matrix_idx[:, -1] == j) | (u_matrix_idx[:, -2] == j) | (u_matrix_idx[:, -3] == j), y, np.nan)
+        ax1.plot(y, label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
+        # ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
+      # for j in range(skill_idx_to_plot.shape[0]-3):
+      #   ax1.plot(u_matrix[:, skill_idx_to_plot[j]], label=f'{skill_idx_to_plot[j]}', color=skill_cmap.colors[skill_idx_to_plot[j]%len(skill_cmap.colors)])
+      
       ax1.vlines(i, ymin=u_matrix.min(), ymax=u_matrix.max(), color='black', linestyle='--')
       ax1.set_ylim(u_matrix.min(), u_matrix.max())
       ax1.legend(loc='upper right', fontsize=8)
       ax1.set_xticks([])
-      u_matrix_idx = np.argsort(u_matrix, 1)
       ax1.set_title(f'{i}, first:{u_matrix_idx[i,-1], u_matrix_idx[i,-2], u_matrix_idx[i,-3]}, \
                     last:{u_matrix_idx[i,2], u_matrix_idx[i,1], u_matrix_idx[i,0]}')
       
-      skill_idx_to_plot = np.array([u_matrix_idx[i, -1], u_matrix_idx[i, -2], u_matrix_idx[i, -3],
-                          u_matrix_idx[i, 2], u_matrix_idx[i, 1], u_matrix_idx[i, 0]])
+
       state_all = average_state_ar[skill_idx_to_plot]
       action_all = average_action_ar[skill_idx_to_plot]
       show_sa_all(ax_skill, state_all, action_all, skill_idx_to_plot, skill_cmap)
@@ -339,6 +347,9 @@ def linear_loglikelihood(state, action, task, lr):
   lr_var = torch.FloatTensor(lr['var_matrix'])
   # print('lr_coef:', lr_coef.shape, 'lr_intercept:', lr_intercept.shape, 'lr_var:', lr_var.shape)
   n_task = lr_coef.shape[0]
+  batch_size = state.shape[0]
+  state_dim = state.shape[-1]
+  action_dim = action.shape[-1]
   assert lr_coef.shape == (n_task, state.shape[-1], action.shape[-1])
   assert lr_intercept.shape == (n_task, action.shape[-1],)
   assert lr_var.shape == (n_task, action.shape[-1],)
@@ -346,10 +357,13 @@ def linear_loglikelihood(state, action, task, lr):
   linear_coef_matrix = lr_coef[task]
   linear_intercept_matrix = lr_intercept[task]
   linear_var_matrix = lr_var[task]
+  assert linear_coef_matrix.shape == (batch_size, action_dim, state_dim)
+  assert linear_intercept_matrix.shape == (batch_size, action_dim) == linear_var_matrix.shape
   # batch_size, n_action_dim, bins, action_dim, state_dim = linear_coef_matrix.shape
   # print('state:', state.shape, 'linear_coef_matrix:', linear_coef_matrix.shape)
   pred_action = torch.matmul(state.unsqueeze(-2), torch.transpose(linear_coef_matrix, -1, -2)).squeeze(-2) + linear_intercept_matrix
   ll = - 0.5 * (torch.square(pred_action - action)) / linear_var_matrix
+  assert ll.shape == (batch_size, action_dim)
   # assert ll.shape == (batch_size, n_action_dim, bins, action_dim) 
   return ll.sum(-1)
 
@@ -361,7 +375,7 @@ def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch
   state = state.to(device)
   action = action.to(device)
   task = task.to(device)
-  np.random.seed(seed)
+  np.random.seed(seed+10000)
   sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
   state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
   action_2 = action_2.to(device)
@@ -378,40 +392,37 @@ def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch
   negative_logll_linear = linear_loglikelihood(state, action_2, task, lr).detach().cpu().numpy()
   auc_agent, auc_linear = plot_auc(pos_logll, neg_logll, positive_logll_linear, negative_logll_linear, 
                                    pos_logll_initial, neg_logll_initial, save_path)
-  fig, ax = plt.subplots(1, 2, figsize=(6, 3))
-  ax[0].hist(pos_logll, bins=20, alpha=0.6, density=True, color='orange')
-  ax[0].hist(neg_logll, bins=20, alpha=0.6, density=True, color='g')
-  ax[0].set_title(f'agent, auc={auc_agent:.4f}')
-  ax[1].hist(positive_logll_linear, bins=20, alpha=0.6, density=True, color='orange')
-  ax[1].hist(negative_logll_linear, bins=20, alpha=0.6, density=True, color='g')
-  ax[1].set_title(f'linear, auc={auc_linear:.4f}')
-  save_fig(save_path.replace('auc', 'hist'))
+  # fig, ax = plt.subplots(1, 2, figsize=(6, 3))
+  # ax[0].hist(pos_logll, bins=20, alpha=0.6, density=True, color='orange')
+  # ax[0].hist(neg_logll, bins=20, alpha=0.6, density=True, color='g')
+  # ax[0].set_title(f'agent, auc={auc_agent:.4f}')
+  # ax[1].hist(positive_logll_linear, bins=20, alpha=0.6, density=True, color='orange')
+  # ax[1].hist(negative_logll_linear, bins=20, alpha=0.6, density=True, color='g')
+  # ax[1].set_title(f'linear, auc={auc_linear:.4f}')
+  # save_fig(save_path.replace('auc', 'hist'))
   return auc_agent, auc_linear
 
 def plot_auc(positive_logll, negative_logll, pos_lr_logll, neg_lr_logll, initial_pos_logll, initial_neg_logll, save_path):
   y_agent_true = np.concatenate([np.ones_like(positive_logll), np.zeros_like(negative_logll)])
   y_lr_true = np.concatenate([np.ones_like(pos_lr_logll), np.zeros_like(neg_lr_logll)])
-  y_agent_initial = np.concatenate([np.ones_like(initial_pos_logll), np.zeros_like(initial_neg_logll)])
+  # y_agent_initial = np.concatenate([np.ones_like(initial_pos_logll), np.zeros_like(initial_neg_logll)])
   auc_agent = roc_auc_score(y_agent_true, np.concatenate([positive_logll, negative_logll]))
   auc_lr = roc_auc_score(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
-  auc_agent_initial = roc_auc_score(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
-  fig, ax = plt.subplots(1,1, figsize=(3.2,3))
+  # auc_agent_initial = roc_auc_score(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
+  # fig, ax = plt.subplots(1,1, figsize=(3.2,3))
 
-  fpr1, tpr1, _ = roc_curve(y_agent_true, np.concatenate([positive_logll, negative_logll]))
-  fpr2, tpr2, _ = roc_curve(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
-  fpr3, tpr3, _ = roc_curve(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
-  ax.plot(fpr1, tpr1, color='orange', label=f'SKIL, AUC:{auc_agent:.4f}')
-  ax.plot(fpr2, tpr2, color='g', label=f'linear, AUC:{auc_lr:.4f}')
-  ax.plot(fpr3, tpr3, color='b', label=f'initial, AUC:{auc_agent_initial:.4f}')
-  ax.legend()
-  ax.plot([0, 1], [0, 1], color='k', linestyle='--')
-  ax.set_xlabel('False Positive Rate')
-  ax.set_ylabel('True Positive Rate')
-  # ax.set_title(f'AUC: SKIL, Linear')
-  # ax[1].bar(['SKIL', 'linear'], [auc_agent, auc_lr], color=['orange', 'g'])
-  # ax[1].set_ylabel('AUC')
-  plt.subplots_adjust(left=0.2, right=0.99, bottom=0.2, top=0.95)
-  save_fig(f'{save_path}', dpi=400)
+  # fpr1, tpr1, _ = roc_curve(y_agent_true, np.concatenate([positive_logll, negative_logll]))
+  # fpr2, tpr2, _ = roc_curve(y_lr_true, np.concatenate([pos_lr_logll, neg_lr_logll]))
+  # fpr3, tpr3, _ = roc_curve(y_agent_initial, np.concatenate([initial_pos_logll, initial_neg_logll]))
+  # ax.plot(fpr1, tpr1, color='orange', label=f'SKIL, AUC:{auc_agent:.4f}')
+  # ax.plot(fpr2, tpr2, color='g', label=f'linear, AUC:{auc_lr:.4f}')
+  # ax.plot(fpr3, tpr3, color='b', label=f'initial, AUC:{auc_agent_initial:.4f}')
+  # ax.legend()
+  # ax.plot([0, 1], [0, 1], color='k', linestyle='--')
+  # ax.set_xlabel('False Positive Rate')
+  # ax.set_ylabel('True Positive Rate')
+  # plt.subplots_adjust(left=0.2, right=0.99, bottom=0.2, top=0.95)
+  # save_fig(f'{save_path}', dpi=400)
   return auc_agent, auc_lr
 
 def plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, feature_dim, save_path):

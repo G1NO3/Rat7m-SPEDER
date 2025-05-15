@@ -5,7 +5,7 @@
 # Caution
 python visualize.py --alg spedersac --env kms --feature_dim 16 \
                 --max_timesteps 1000000 --dir A_f16_task78_ctrl_critic_nohidden --start_timesteps 200\
-                --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cpu --scale_factor 200\
+                --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cuda:0 --scale_factor 200\
                 --actor_type autoregressive
 # for i in 64 96 128
 # do  

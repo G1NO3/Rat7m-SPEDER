@@ -345,6 +345,9 @@ def linear_loglikelihood(state, action, task, lr):
   lr_coef = torch.FloatTensor(lr['coef_matrix'])
   lr_intercept = torch.FloatTensor(lr['intercept_matrix'])
   lr_var = torch.FloatTensor(lr['var_matrix'])
+  lr_covar = torch.FloatTensor(lr['covar_matrix'])
+  lr_covar_inv = torch.FloatTensor(lr['covar_matrix_inv'])
+  lr_logdet = torch.FloatTensor(lr['logdet_matrix'])
   # print('lr_coef:', lr_coef.shape, 'lr_intercept:', lr_intercept.shape, 'lr_var:', lr_var.shape)
   n_task = lr_coef.shape[0]
   batch_size = state.shape[0]
@@ -356,16 +359,26 @@ def linear_loglikelihood(state, action, task, lr):
   task = task.squeeze(-1).long()
   linear_coef_matrix = lr_coef[task]
   linear_intercept_matrix = lr_intercept[task]
-  linear_var_matrix = lr_var[task]
+  # linear_var_matrix = lr_var[task]
+  linear_covar_matrix = lr_covar[task]
+  linear_covar_matrix_inv = lr_covar_inv[task]
+  linear_logdet_matrix = lr_logdet[task]
   assert linear_coef_matrix.shape == (batch_size, action_dim, state_dim)
-  assert linear_intercept_matrix.shape == (batch_size, action_dim) == linear_var_matrix.shape
+  assert linear_intercept_matrix.shape == (batch_size, action_dim)
+  assert linear_covar_matrix.shape == (batch_size, action_dim, action_dim)
+  assert state.shape == (batch_size, state_dim)
   # batch_size, n_action_dim, bins, action_dim, state_dim = linear_coef_matrix.shape
   # print('state:', state.shape, 'linear_coef_matrix:', linear_coef_matrix.shape)
   pred_action = torch.matmul(state.unsqueeze(-2), torch.transpose(linear_coef_matrix, -1, -2)).squeeze(-2) + linear_intercept_matrix
-  ll = - 0.5 * (torch.square(pred_action - action)) / linear_var_matrix
-  assert ll.shape == (batch_size, action_dim)
+  err = pred_action - action
+  quad = err.unsqueeze(-2) @ linear_covar_matrix_inv @ err.unsqueeze(-1)
+  ll = - 0.5 * (quad.squeeze(-1) + linear_logdet_matrix)
+  assert ll.shape == (batch_size, 1)
+  # ll = - 0.5 * (torch.square(pred_action - action)) / linear_var_matrix
+  # assert ll.shape == (batch_size, action_dim)
   # assert ll.shape == (batch_size, n_action_dim, bins, action_dim) 
-  return ll.sum(-1)
+  # return ll.sum(-1)
+  return ll
 
 def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch_size, save_path, seed, device):
   agent.critic = agent.critic.to(device)
@@ -375,7 +388,6 @@ def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch
   state = state.to(device)
   action = action.to(device)
   task = task.to(device)
-  np.random.seed(seed+10000)
   sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
   state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
   action_2 = action_2.to(device)

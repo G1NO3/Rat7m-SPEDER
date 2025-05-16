@@ -85,49 +85,57 @@ def rasterize_figure(fig):
   raster = raster_flat.reshape((height, width, 3))
   return raster
 
-def plot_gif_onefig(stateseq, save_path):
+def plot_gif_onefig(stateseq, save_path, dpi=100):
   # stateseq: [timestep, state_dim]
   print(stateseq.shape)
   edges, state_name, n_dim = get_edges(stateseq.shape[-1])
   fig, axis = plt.subplots(1, 1, figsize=(5, 5))
   n_bodyparts = len(state_name)
   n_img = stateseq.shape[0]
-  state_seqs_to_plot = stateseq.reshape(n_img, n_bodyparts, 2)
-  cmap = plt.cm.get_cmap('viridis')
+  state_seqs_rs = stateseq.reshape(n_img, n_bodyparts, 2)
+  print('state_seqs_to_plot:', state_seqs_rs.shape)
+  print(state_seqs_rs[:,0])
+  cmap = plt.cm.get_cmap('autumn')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
-  state_seqs_to_plot -= state_seqs_to_plot.mean(axis=(0,1), keepdims=True)
-  axmin = -0.2
-  axmax = 0.2
-  aymin = -0.2
-  aymax = 0.2
-  ymin = np.min(state_seqs_to_plot[...,1], axis=(-1,-2))
-  ymax = np.max(state_seqs_to_plot[...,1], axis=(-1,-2))
-  xmin = np.min(state_seqs_to_plot[...,0], axis=(-1,-2))
-  xmax = np.max(state_seqs_to_plot[...,0], axis=(-1,-2))
-  indicator = np.where((aymin > ymin) | (aymax < ymax) | (axmin > xmin) | (axmax < xmax), 1, 0)
-  aymin = np.where(indicator, -0.6, aymin)
-  aymax = np.where(indicator, 0.6, aymax)
-  axmin = np.where(indicator, -0.6, axmin)
-  axmax = np.where(indicator, 0.6, axmax)
+  state_seqs_to_plot = state_seqs_rs - state_seqs_rs.mean(axis=(0,1), keepdims=True)
+  # state_seqs_to_plot -= state_seqs_to_plot.mean(axis=(0,1), keepdims=True)
+  axmin = -0.3
+  axmax = 0.3
+  aymin = -0.3
+  aymax = 0.3
+  # ymin = np.min(state_seqs_to_plot[...,1], axis=(-1,-2))
+  # ymax = np.max(state_seqs_to_plot[...,1], axis=(-1,-2))
+  # xmin = np.min(state_seqs_to_plot[...,0], axis=(-1,-2))
+  # xmax = np.max(state_seqs_to_plot[...,0], axis=(-1,-2))
+  # indicator = np.where((aymin > ymin) | (aymax < ymax) | (axmin > xmin) | (axmax < xmax), 1, 0)
+  # aymin = np.where(indicator, -0.6, aymin)
+  # aymax = np.where(indicator, 0.6, aymax)
+  # axmin = np.where(indicator, -0.6, axmin)
+  # axmax = np.where(indicator, 0.6, axmax)
   for i in range(n_img):
-    if i % 3 == 1 or i % 3 == 2:
-      continue
     for p1, p2 in edges:
       axis.plot(
           *state_seqs_to_plot[i, (p1, p2)].T,
           color=keypoint_colors[p1],
-          linewidth=5.0,zorder=i*3)
+          linewidth=5.0,zorder=i*4)
+    for p1, p2 in edges:
+      axis.plot(
+          *state_seqs_to_plot[i, (p1, p2)].T,
+          color='black',
+          linewidth=5.0*0.9,zorder=i*4+1)
     axis.scatter(
         *state_seqs_to_plot[i].T,
         c=keypoint_colors,
-        s=100,zorder=i*3+1)
+        edgecolors='black',
+        s=100,zorder=i*4+2)
     # draw a white rectangle
     if i < n_img - 1:
-        axis.fill_between([axmin, axmax], y1=aymin, y2=aymax, color='white', alpha=0.1,
-                        zorder=i*3+2)
+        axis.fill_between([axmin, axmax], y1=aymin, y2=aymax, color='white', alpha=0.3,
+                        zorder=i*4+3)
     axis.set_xlim(axmin, axmax)
     axis.set_ylim(aymin, aymax)
-  save_fig(save_path)
+  # plt.show()
+  save_fig(save_path, dpi=dpi)
 
 def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action_ar, save_path, dpi):
   # fit_soft_info = pickle.load(open('./figure/kms/spedersac/A_f16_task78_ctrl_critic_nohidden/0/fit_soft_info.pkl', 'rb'))
@@ -222,7 +230,7 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
       for j in range(u_matrix.shape[1]):
         y = u_matrix[:,j]
         # print((u_matrix_idx[:,-1]==j).shape)
-        y = np.where((u_matrix_idx[:, -1] == j) | (u_matrix_idx[:, -2] == j) | (u_matrix_idx[:, -3] == j), y, np.nan)
+        # y = np.where((u_matrix_idx[:, -1] == j) | (u_matrix_idx[:, -2] == j) | (u_matrix_idx[:, -3] == j), y, np.nan)
         ax1.plot(y, label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
         # ax1.plot(u_matrix[:,j], label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
       # for j in range(skill_idx_to_plot.shape[0]-3):
@@ -283,14 +291,14 @@ def show_sa_all(axs, state_all, action_all, skill_all, skill_cmap):
   n_sample = state_all.shape[0]
   state_seqs_to_plot = state_all.reshape(-1, n_bodyparts, 2)
   action_seqs_to_plot = action_all.reshape(-1, n_bodyparts, 2)
-  cmap = plt.cm.get_cmap('viridis')
+  cmap = plt.cm.get_cmap('autumn')
   keypoint_colors = cmap(np.linspace(0, 1, len(state_name)))
   axmin = -0.3
   axmax = 0.3
   aymin = -0.3
   aymax = 0.3
   xym = [axmin, axmax, aymin, aymax]
-  skill_colors = [skill_cmap.colors[i%len(skill_cmap.colors)] for i in skill_all]
+  skill_colors = [skill_cmap.colors[i%len(skill_cmap.colors)] for i in range(n_sample)]
   for i in range(n_sample):
     show_sa_single(axs[i], skill_all[i], state_seqs_to_plot[i], action_seqs_to_plot[i], 
                    edges, keypoint_colors, skill_colors[i], axspine_width=10, xym=xym)
@@ -308,21 +316,44 @@ def show_sa_single(ax, syllable, state, action, edges, keypoint_colors, syllable
 
 def show_s(ax, state_seq, edges, keypoint_colors):
   # state_seq: [n_bodyparts, 2]
+  '''
+      for p1, p2 in edges:
+        axis.plot(
+            *state_seqs_to_plot[i, (p1, p2)].T,
+            color=keypoint_colors[p1],
+            linewidth=5.0,zorder=i*4)
+      for p1, p2 in edges:
+        axis.plot(
+            *state_seqs_to_plot[i, (p1, p2)].T,
+            color='black',
+            linewidth=5.0*0.9,zorder=i*4+1)
+      axis.scatter(
+          *state_seqs_to_plot[i].T,
+          c=keypoint_colors,
+          edgecolors='black',
+          s=100,zorder=i*4+2)'''
   for p1, p2 in edges:
     ax.plot(
         *state_seq[(p1, p2), :].T,
         color=keypoint_colors[p1],
         linewidth=5.0, zorder=0)
+  for p1, p2 in edges:
+    ax.plot(
+        *state_seq[(p1, p2), :].T,
+        color='black',
+        linewidth=5.0*0.9, zorder=1)
   ax.scatter(
       *state_seq.T,
       c=keypoint_colors,
-      s=100, zorder=0)
+      edgecolors='black',
+      s=100, zorder=2)
 def show_a(ax, state_seq, action_seq):
   n_bodyparts = state_seq.shape[0]
   for k in range(n_bodyparts):
     ax.quiver(state_seq[k, 0], state_seq[k, 1], 
               action_seq[k, 0], action_seq[k, 1], 
-              angles='xy', scale_units='xy', scale=0.07, color='r', zorder=1)
+              angles='xy', scale_units='xy', scale=0.07, color='purple',
+              width=0.01, headwidth=3, headlength=5, zorder=3)
 def set_ax_color_width(ax, color, linewidth):
   # ax.axis('off')
   for spine in ax.spines.values():
@@ -444,11 +475,16 @@ def plot_u(u_matrix, initial_u, f_phi_matrix, initial_f_phi_matrix, feature_dim,
   ax = ax.flatten()
   initial_u_numpy = initial_u.detach().cpu().numpy()
   u_matrix_numpy = u_matrix.detach().cpu().numpy()
+  u_matrix_idx = np.argsort(u_matrix_numpy, 1)
   for j in range(feature_dim):
     ax[0].plot(initial_u_numpy[:,j], label=f'{j}')
   # ax[1].imshow(initial_f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
   for j in range(feature_dim):
-    ax[1].plot(u_matrix_numpy[:,j], label=f'{j}')
+    # ax[1].plot(u_matrix_numpy[:,j], label=f'{j}')
+    y = u_matrix[:,j]
+    # print((u_matrix_idx[:,-1]==j).shape)
+    y = np.where((u_matrix_idx[:, -1] == j) | (u_matrix_idx[:, -2] == j) | (u_matrix_idx[:, -3] == j), y, np.nan)
+    ax[1].plot(y, label=f'{j}', color=skill_cmap.colors[j%len(skill_cmap.colors)])
   # ax[3].imshow(f_phi_matrix[0].detach().cpu().numpy(), cmap='hot', interpolation='nearest')
   cor = np.corrcoef(initial_u_numpy.flatten(), u_matrix_numpy.flatten())
   ax[0].legend()

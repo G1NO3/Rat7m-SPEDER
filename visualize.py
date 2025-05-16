@@ -184,7 +184,7 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   device = 'cuda:0'
 
-  sample_len = 1000
+  sample_len = 250
   n_sample = 16
   z_phi_matrix = torch.zeros((n_sample, sample_len, agent.feature_dim))
   # print('dataset device:', dataset.device)
@@ -280,14 +280,6 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
         axis.plot(u_matrix[:, j].detach().cpu().numpy(), label=f'{j}')
       axis.set_title(f'iter {i}')
       save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_{i}.png')
-
-    if mode == 'train':
-      for j in range(n_step):
-        f_phi_matrix = agent.critic(z_phi_matrix)
-        loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
-        critic_optimizer.zero_grad()
-        loss.backward()
-        critic_optimizer.step()
     f_phi_matrix = agent.critic(z_phi_matrix).detach()
     for j in range(n_step):
       loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
@@ -295,6 +287,15 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
       loss.backward()
       u_optimizer.step()
     u_matrix_list[i] = u_matrix.detach()
+    if mode == 'train':
+      for j in range(n_step):
+        f_phi_matrix = agent.critic(z_phi_matrix)
+        loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
+        critic_optimizer.zero_grad()
+        loss.backward()
+        critic_optimizer.step()
+
+
 
 
     print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
@@ -316,20 +317,20 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
   # print('./kms/critic_16_map.pth')
   # agent.critic = agent.critic.to('cpu')
   # u_matrix = u_matrix.to('cpu')
-  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent, phi_dim)
+  average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent, phi_dim)
 
-  # pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
-  #              'initial_state': initial_state.numpy(), 'initial_task': initial_task.numpy(),
-  #              'u_matrix': u_matrix.detach().numpy()},
-  #             open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
+  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
+               'initial_state': initial_state.detach().cpu().numpy(), 'initial_task': initial_task.detach().cpu().numpy(),
+               'u_matrix': u_matrix.detach().cpu().numpy()},
+              open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
   # print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
   # average_state_ar = average_action_ar = None
   # print('u_matrix:', u_matrix.shape)
   
-  # pair_gif_and_u(initial_state.numpy(), u_matrix.detach().numpy(), initial_task.numpy(), 
-  #                average_state_ar, average_action_ar,
-  #                f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/video_{root_filename}.mp4',
-  #                dpi=100)
+  pair_gif_and_u(initial_state.detach().cpu().numpy(), u_matrix.detach().cpu().numpy(), initial_task.detach().cpu().numpy(),
+                 average_state_ar, average_action_ar,
+                 f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/video_{root_filename}.mp4',
+                 dpi=100)
   times = 1000
   auc_agents = np.zeros((times, ))
   auc_linears = np.zeros((times, ))
@@ -615,8 +616,8 @@ def optimize_action_to_phi(args, dataset, agent, dimension):
     loss.backward()
     optimizer.step()
   # print(f'action {t}:', action)
-  state_seq = state.clone().detach().numpy()
-  action_seq = action.clone().detach().numpy()
+  state_seq = state.clone().detach().cpu().numpy()
+  action_seq = action.clone().detach().cpu().numpy()
   show_state_action_field(state_seq, action_seq, f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/action_to_phi/{dimension}.png')
   return 
 
@@ -630,12 +631,12 @@ def collect_action_to_phi(args, dataset, agent, dimension):
   sample_idx = np.random.randint(0, dataset.size, n_sample)
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
   z_phi = agent.phi(torch.concat([state, action], -1))
-  f_phi = agent.critic(z_phi).detach().numpy()
+  f_phi = agent.critic(z_phi).detach().cpu().numpy()
   # z_phi = z_phi.detach().numpy()
   # print('f_phi:', f_phi.shape)
   take_idx = np.argsort(f_phi[:,dimension])[-n_sample//50:]
-  state_seq = state[take_idx].clone().detach().numpy()
-  action_seq = action[take_idx].clone().detach().numpy()
+  state_seq = state[take_idx].clone().detach().cpu().numpy()
+  action_seq = action[take_idx].clone().detach().cpu().numpy()
   # fig, ax = plt.subplots(1,1, figsize=(10,10))
   # ax.hist(z_phi[:,dimension], bins=20, alpha=0.6, density=True, color='orange')
   # save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/phi/{dimension}.png')
@@ -2587,7 +2588,7 @@ if __name__ == "__main__":
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   # fit_soft_syllable_batch(args, replay_buffer, agent)
-  # fit_soft_syllable(args, replay_buffer, agent, 'test', 43883, 67224)
+  # fit_soft_syllable(args, replay_buffer, agent, 'train', 68290, None)
   fit_train_test(args, replay_buffer, agent)
   # fit_whole_dataset(args, replay_buffer, agent)
   # pair_gif_and_u(None, None, None, None, None, None)

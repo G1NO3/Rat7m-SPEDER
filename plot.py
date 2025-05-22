@@ -150,7 +150,7 @@ def pair_gif_and_u(stateseq, u_matrix, taskseq, average_state_ar, average_action
   # taskseq: [timestep, 1]
   # average_state_ar: [feature_dim, state_dim]
   # average_action_ar: [feature_dim, action_dim]
-  writer = FFMpegWriter(fps=10)
+  writer = FFMpegWriter(fps=15)
 
   edges, state_name, n_dim = get_edges(stateseq.shape[-1])
   n_bodyparts = len(state_name)

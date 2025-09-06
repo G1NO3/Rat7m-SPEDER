@@ -411,6 +411,19 @@ def linear_loglikelihood(state, action, task, lr):
   # return ll.sum(-1)
   return ll
 
+def cal_auc_opal(state, action, dataset, agent, batch_size, save_path, seed, device, cut_seq_len=10):
+  state = state.to(device)
+  action = action.to(device)
+  sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
+  state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
+  action_2 = action_2.to(device)
+  pos_logll = agent.action_loglikelihood(state, action, cut_seq_len=cut_seq_len).detach().cpu().numpy()
+  neg_logll = agent.action_loglikelihood(state, action_2, cut_seq_len=cut_seq_len).detach().cpu().numpy()
+  y_agent_true = np.concatenate([np.ones_like(pos_logll), np.zeros_like(neg_logll)])
+  auc_agent = roc_auc_score(y_agent_true, np.concatenate([pos_logll, neg_logll]))
+  return auc_agent
+
+
 def cal_plot_auc(state, action, task, initial_u, u_matrix, dataset, agent, batch_size, save_path, seed, device):
   agent.critic = agent.critic.to(device)
   agent.phi = agent.phi.to(device)

@@ -37,6 +37,8 @@ from plot import save_fig, get_edges, plot_gif_onefig, rasterize_figure, pair_gi
               plot_auc, plot_u, cal_plot_auc, agent_likelihood_fn, linear_loglikelihood
 from finetune_agent import Finetune_Agent
 from utils.util import MLP
+from agent.opal import opal_agent
+
 def sample_and_plot_gif_onefig(args, dataset, agent):
   state_dim = 16
   action_dim = 16
@@ -2515,6 +2517,121 @@ def optimize_action(scale_factor, action, state, task, agent):
   # plt.show()
   return optimized_action
 
+def fit_train_test_opal(args, dataset, agent):
+  times = 10
+  train_auc_opal = np.zeros((times, ))
+  test_auc_opal = np.zeros((times, ))
+  np.random.seed(4)
+  auc_all = open('./kms/auc_average_1_grw.txt', 'r')
+  auc_all = auc_all.readlines()
+  train_auc_agent = []
+  train_auc_linear = []
+  test_auc_agent = []
+  test_auc_linear = []
+  train_idxs = []
+  test_idxs = []
+  for i in range(len(auc_all)):
+      auc_all[i] = auc_all[i].split()
+      print(auc_all[i])
+      if 'train' in auc_all[i][0]:
+          train_auc_agent.append(float(auc_all[i][1]))
+          # print(auc_all[i][1])
+          train_auc_linear.append(float(auc_all[i][2]))
+          # print(auc_all[i][2])
+          train_idxs.append(float(auc_all[i][0].split(':')[-1]))
+      
+      if 'test' in auc_all[i][0]:
+          test_auc_agent.append(float(auc_all[i][1]))
+          # print(auc_all[i][1])
+          test_auc_linear.append(float(auc_all[i][2]))
+          # print(auc_all[i][2])
+          test_idxs.append(float(auc_all[i][0].split(':')[-1]))
+  # print('train_auc_agent:', train_auc_agent)
+  # print('train_auc_linear:', train_auc_linear)
+  train_auc_agent = np.array(train_auc_agent)
+  train_auc_linear = np.array(train_auc_linear)
+  test_auc_agent = np.array(test_auc_agent)
+  test_auc_linear = np.array(test_auc_linear)
+  train_idxs = np.array(train_idxs).astype(np.int64)
+  test_idxs = np.array(test_idxs).astype(np.int64)
+  f_path = f'./kms/opal/auc_average.txt'
+  f = open(f_path, 'w')
+
+  for i in range(times):
+    train_idx = train_idxs[i]
+    print('train_idx:', train_idx)
+    auc_opal_mean, auc_opal_std = fit_latent_opal(args, dataset, agent, mode='train', \
+                                  initial_sample_idx=train_idx, train_idx=None)
+    train_auc_opal[i] = auc_opal_mean
+    print('train_auc_agent:', train_auc_agent[i], 'train_auc_linear:', train_auc_linear[i],
+          'train_auc_opal:', train_auc_opal[i])
+    test_idx = test_idxs[i]
+    print('test_idx:', test_idx)
+    auc_opal_mean, auc_opal_std = fit_latent_opal(args, dataset, agent, mode='test', \
+                                  initial_sample_idx=test_idx, train_idx=train_idx)
+    test_auc_opal[i] = auc_opal_mean
+    print('test_auc_agent:', test_auc_agent[i], 'test_auc_linear:', test_auc_linear[i],
+          'test_auc_opal:', test_auc_opal[i])
+    f.write(f'{i}\n train_idx:{train_idx} {train_auc_agent[i]} {train_auc_linear[i]} {train_auc_opal[i]}\n'
+             f'test_idx:{test_idx} {test_auc_agent[i]} {test_auc_linear[i]} {test_auc_opal[i]}\n')
+    f.flush()
+  f.close()
+
+def fit_latent_opal(args, dataset, agent, mode, initial_sample_idx, train_idx):
+  # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
+  device = 'cuda:0'
+
+  sample_len = 250
+  n_step = 1000
+  cut_seq_len = 10
+  sample_idx = initial_sample_idx + np.arange(sample_len)
+  state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
+  if mode == 'train':
+    actor_optimizer = torch.optim.Adam(agent.actor.parameters(), lr=0)
+  elif mode == 'test':
+    agent.actor.load_state_dict(torch.load(f'./kms/opal/actor_{train_idx}.pth'))
+    
+  def loss_fn(state, action):
+    logll = agent.action_loglikelihood(state, action, cut_seq_len)
+    loss = -logll.mean()
+    return loss
+  
+  if mode == 'train':
+    # for i in range(n_step):
+    #   loss = loss_fn(state, action)
+    #   actor_optimizer.zero_grad()
+    #   loss.backward()
+    #   actor_optimizer.step()
+    #   if i%100 == 0:
+    #     print(f'iter {i}, loss: {loss.item():.4f}')
+    torch.save(agent.actor.state_dict(), f'./kms/opal/actor_{initial_sample_idx}.pth')
+
+  root_filename = f'{initial_sample_idx}_{agent.hidden_dim}'
+  if mode == 'train':
+    root_filename = f'{root_filename}_train'
+  elif mode == 'test':
+    root_filename = f'{root_filename}_test'
+
+  times = 1000
+  auc_opals = np.zeros((times, ))
+  for i in range(times):
+    auc_opal = cal_plot_auc_opal(state, action, dataset, agent, batch_size=sample_len,
+                  seed=i, device=device)
+    auc_opals[i] = auc_opal
+
+  return auc_opals.mean(), auc_opals.std()
+
+def cal_plot_auc_opal(state, action, dataset, agent, batch_size, seed, device):
+  sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
+  state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
+  action_2 = action_2.to(device)
+  pos_logll = agent.action_loglikelihood(state, action).detach().cpu().numpy()
+  neg_logll = agent.action_loglikelihood(state, action_2).detach().cpu().numpy()
+  y_agent_true = np.concatenate([np.ones_like(pos_logll), np.zeros_like(neg_logll)])
+  auc_agent = roc_auc_score(y_agent_true, np.concatenate([pos_logll, neg_logll]))
+  return auc_agent
+
+
 EPS_GREEDY = 0.01
 
 if __name__ == "__main__":
@@ -2577,10 +2694,16 @@ if __name__ == "__main__":
   kwargs['tau'] = args.tau
   kwargs['hidden_dim'] = args.hidden_dim  
   kwargs['directory'] = args.dir
-  agent = spedersac_agent.SPEDERSACAgent(**kwargs)
+  if args.alg == 'spedersac':
+    agent = spedersac_agent.SPEDERSACAgent(**kwargs)
   # agent = spedersac_agent.QR_IRLAgent(**kwargs)
   # agent = spedersac_agent.SimpleWorldModel(**kwargs)
   # agent = spedersac_agent.RandomFeatureModel(**kwargs)
+  elif args.alg == 'opal':
+    kwargs['hidden_dim'] = args.feature_dim
+    kwargs['lr'] = 1e-3
+    kwargs['beta'] = 0.1
+    agent = opal_agent.OpalAgent(**kwargs)
   
   # agent.load_phi_mu(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
@@ -2588,8 +2711,9 @@ if __name__ == "__main__":
   print('load model from:', f'{save_path}/checkpoint_{args.max_timesteps}.pth')
   # sample_and_plot_gif_onefig(args, replay_buffer, agent)
   # fit_soft_syllable_batch(args, replay_buffer, agent)
-  fit_soft_syllable(args, replay_buffer, agent, 'train', 68290, None)
+  # fit_soft_syllable(args, replay_buffer, agent, 'train', 68290, None)
   # fit_train_test(args, replay_buffer, agent)
+  fit_train_test_opal(args, replay_buffer, agent)
   # fit_whole_dataset(args, replay_buffer, agent)
   # pair_gif_and_u(None, None, None, None, None, None)
   # perturb_action(args, replay_buffer, agent)

@@ -62,6 +62,41 @@ class SquashedNormal(pyd.transformed_distribution.TransformedDistribution):
     return mu
 
 
+class DiagGaussianEncoder(nn.Module):
+  """torch.distributions implementation of an diagonal Gaussian policy."""
+  def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth,
+                log_std_bounds):
+    super().__init__()
+
+    self.log_std_bounds = log_std_bounds
+    self.trunk = util.mlp_relu(obs_dim, hidden_dim, 2 * action_dim,
+                            hidden_depth)
+
+    self.outputs = dict()
+    self.apply(util.weight_init)
+
+  def forward(self, obs):
+    mu, log_std = self.trunk(obs).chunk(2, dim=-1)
+
+    # constrain log_std inside [log_std_min, log_std_max]
+    log_std = torch.tanh(log_std)
+    log_std_min, log_std_max = self.log_std_bounds
+    log_std = log_std_min + 0.5 * (log_std_max - log_std_min) * (log_std +
+                                                                  1)
+
+    std = log_std.exp()
+
+    self.outputs['mu'] = mu
+    self.outputs['std'] = std
+
+    dist = pyd.Normal(mu, std)
+    return dist
+  def select_action(self, obs):
+    with torch.no_grad():
+      dist = self.forward(obs)
+      action = dist.rsample()
+      return action
+
 class DiagGaussianActor(nn.Module):
   """torch.distributions implementation of an diagonal Gaussian policy."""
   def __init__(self, obs_dim, action_dim, hidden_dim, hidden_depth,

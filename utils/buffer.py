@@ -93,6 +93,19 @@ class ReplayBuffer(object):
 			task=torch.FloatTensor(self.task[ind]).to(self.device),
 			next_task=torch.FloatTensor(self.next_task[ind]).to(self.device)
 		)
+	def sample_sequence(self, batch_size, seq_len):
+		ind = np.random.randint(0, self.size - seq_len + 1, size=batch_size)
+		arange = np.arange(seq_len)
+		index = (ind[:, None] + arange[None, :]).reshape(-1)
+		return Batch(
+			state=torch.FloatTensor(self.state[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			action=torch.FloatTensor(self.action[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			next_state=torch.FloatTensor(self.next_state[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			reward=torch.FloatTensor(self.reward[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			done=torch.FloatTensor(self.done[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			task=torch.FloatTensor(self.task[index]).to(self.device).reshape(batch_size, seq_len, -1),
+			next_task=torch.FloatTensor(self.next_task[index]).to(self.device).reshape(batch_size, seq_len, -1)
+		)
 	def take(self, index):
 		if isinstance(index, int):
 			index = np.array([index])

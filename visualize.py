@@ -2518,11 +2518,9 @@ def optimize_action(scale_factor, action, state, task, agent):
   return optimized_action
 
 def fit_train_test_opal(args, dataset, agent):
-  times = 10
-  train_auc_opal = np.zeros((times, ))
-  test_auc_opal = np.zeros((times, ))
+
   np.random.seed(4)
-  auc_all = open('./kms/auc_average_1_grw.txt', 'r')
+  auc_all = open('./kms/auc_average_dim64.txt', 'r')
   auc_all = auc_all.readlines()
   train_auc_agent = []
   train_auc_linear = []
@@ -2556,8 +2554,10 @@ def fit_train_test_opal(args, dataset, agent):
   test_idxs = np.array(test_idxs).astype(np.int64)
   f_path = f'./kms/opal/auc_average.txt'
   f = open(f_path, 'w')
+  train_auc_opal = np.zeros((len(train_auc_agent), ))
+  test_auc_opal = np.zeros((len(train_auc_agent), ))
 
-  for i in range(times):
+  for i in range(len(train_auc_agent)):
     train_idx = train_idxs[i]
     print('train_idx:', train_idx)
     auc_opal_mean, auc_opal_std = fit_latent_opal(args, dataset, agent, mode='train', \

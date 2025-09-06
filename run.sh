@@ -3,8 +3,8 @@
 #                  --eval_freq 1000 --discount 0.9 --batch_size 128 --lasso_coef 0.01 --feature_lr 0.0001 \
 #                  --actor_type gaussian
 # Caution
-python visualize.py --alg opal --env kms --feature_dim 512 \
-               --max_timesteps 1000000 --dir A_f512_task78_lr1e-4_opal --start_timesteps 200\
+python visualize.py --alg opal --env kms --feature_dim 64 \
+               --max_timesteps 500000 --dir A_f64_task78_opal --start_timesteps 200\
                --eval_freq 5000 --discount 0.9 --batch_size 5 --times 100 --device cuda:0 --scale_factor 200\
                --actor_type autoregressive
 # for i in 64 96 128

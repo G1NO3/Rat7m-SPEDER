@@ -2520,7 +2520,7 @@ def optimize_action(scale_factor, action, state, task, agent):
 def fit_train_test_opal(args, dataset, agent):
 
   np.random.seed(4)
-  auc_all = open('./kms/auc_average_64nohidden_eluout_20.txt', 'r')
+  auc_all = open('./kms/auc_average_64nohidden_eluout_1e-4.txt', 'r')
   auc_all = auc_all.readlines()
   train_auc_agent = []
   train_auc_linear = []
@@ -2581,7 +2581,7 @@ def fit_latent_opal(args, dataset, agent, mode, initial_sample_idx, train_idx):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   device = 'cuda:0'
 
-  sample_len = 250
+  sample_len = 100
   n_step = 1000
   cut_seq_len = 10
   sample_idx = initial_sample_idx + np.arange(sample_len)

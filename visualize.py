@@ -2520,7 +2520,7 @@ def optimize_action(scale_factor, action, state, task, agent):
 def fit_train_test_opal(args, dataset, agent):
 
   np.random.seed(4)
-  auc_all = open('./kms/auc_average_dim64.txt', 'r')
+  auc_all = open('./kms/auc_average_64nohidden_eluout_20.txt', 'r')
   auc_all = auc_all.readlines()
   train_auc_agent = []
   train_auc_linear = []

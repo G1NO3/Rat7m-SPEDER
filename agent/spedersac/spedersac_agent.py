@@ -1084,6 +1084,11 @@ class SPEDERSACAgent():
         sp_likelihood = torch.sum(z_phi * mu_next, dim=-1)
         q = -self.potential(next_state, next_action, task_onehot).squeeze(-1)
         return next_state, next_action, sp_likelihood, q
+    
+    def n_param(self):
+        modules = [self.phi, self.mu, self.u, self.critic]
+        n = sum(p.numel() for m in modules for p in m.parameters() if p.requires_grad)
+        return n
             
 
 
@@ -1192,6 +1197,7 @@ class QR_IRLAgent():
         assert action.shape[-1] == self.action_dim
         assert next_state.shape[-1] == self.state_dim
         assert done.shape[-1] == 1
+        task_onehot = self.task_all[task.long().reshape(-1)].to(self.device)
         current_q1, current_q2 = self.getQ(state, action)
         next_v = self.get_targetV(next_state).detach()
         current_v = self.getV(state)
@@ -1209,17 +1215,17 @@ class QR_IRLAgent():
     def update_actor_and_alpha(self, batch):
         state, action, next_state, reward, done, task, next_task = unpack_batch(batch)
         task_onehot = self.task_all[task.long().reshape(-1)].to(self.device)
-        # dist = self.actor(torch.cat([state, task_onehot], -1))
-        dist = self.actor(state)
-        # sample_action = dist.rsample()
-        # sample_q1, sample_q2 = self.getQ(state, sample_action)
-        # sample_q = torch.min(sample_q1, sample_q2)
-        # sample_action_logprob = dist.log_prob(sample_action).sum(-1, keepdim=True)
-        # SAC_loss = ((self.alpha) * sample_action_logprob - sample_q).mean()
-        # actor_loss = SAC_loss
+        dist = self.actor(torch.cat([state, task_onehot], -1))
+        # dist = self.actor(state)
+        sample_action = dist.rsample()
+        sample_q1, sample_q2 = self.getQ(state, sample_action)
+        sample_q = torch.min(sample_q1, sample_q2)
+        sample_action_logprob = dist.log_prob(sample_action).sum(-1, keepdim=True)
+        SAC_loss = ((self.alpha) * sample_action_logprob - sample_q).mean()
+        actor_loss = SAC_loss
         ###Behavior Cloning
-        log_prob = dist.log_prob(action).sum(-1, keepdim=True)
-        actor_loss = -log_prob.mean()
+        # log_prob = dist.log_prob(action).sum(-1, keepdim=True)
+        # actor_loss = -log_prob.mean()
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
@@ -1236,12 +1242,12 @@ class QR_IRLAgent():
         return info
     def train(self, buffer, batch_size):
         self.steps += 1
-        # critic_info = self.critic_step(buffer.sample(batch_size))
-        actor_info = self.update_actor_and_alpha(buffer.sample(batch_size))
+        critic_info = self.critic_step(buffer.sample(batch_size))
+        # actor_info = self.update_actor_and_alpha(buffer.sample(batch_size))
         self.update_target()
         return {
-            # **critic_info,
-            **actor_info
+            **critic_info,
+            # **actor_info
         }
     def state_dict(self):
         return {'critic': self.critic.state_dict(),
@@ -1255,9 +1261,9 @@ class QR_IRLAgent():
     def action_loglikelihood(self, state, action, task):
         self.actor.eval()
         task_onehot = self.task_all[task.long().squeeze(1)].to(self.device)
-        # dist = self.actor(torch.cat([state, task_onehot], -1))
-        dist = self.actor(state)
-        print(dist.scale)
+        dist = self.actor(torch.cat([state, task_onehot], -1))
+        # dist = self.actor(state)
+        # print(dist.scale)
         actor_log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         return actor_log_prob.mean()
 

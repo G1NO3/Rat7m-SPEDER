@@ -12,7 +12,7 @@ from agent.sac import sac_agent
 from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
-from agent.spedersac import spedersac_agent
+from agent.spedersac import spedersac_agent, iql_agent
 from main import load_rat7m, load_halfcheetah, load_keymoseq, load_all_keymoseq
 from utils.util import unpack_batch
 from matplotlib import pyplot as plt
@@ -232,8 +232,8 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
   if mode == 'train':
     critic_optimizer = torch.optim.Adam(agent.critic.parameters(), lr=1e-3)
   elif mode == 'test':
-    u_matrix = torch.FloatTensor(np.load(f'./kms/u_matrix_{train_idx}_16to64_mle_sparse01_grw10_train.npy')).to(device).requires_grad_()
-    agent.critic.load_state_dict(torch.load(f'./kms/critic_{train_idx}_16to64_mle_sparse01_grw10_train.pth'))
+    u_matrix = torch.FloatTensor(np.load(f'./kms/u_matrix_{train_idx}_64to64_mle_sparse01_grw10_train1.npy')).to(device).requires_grad_()
+    agent.critic.load_state_dict(torch.load(f'./kms/critic_{train_idx}_64to64_mle_sparse01_grw10_train1.pth'))
     
 
   u_optimizer = torch.optim.Adam([u_matrix], lr=1e-3)
@@ -276,12 +276,12 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
     loss = loss_ctrl + neglogprior + loss_reg
     return loss, loss_ctrl, neglogprior, loss_reg
   for i in range(iteration):
-    if i % 10 == 0:
-      fig, axis = plt.subplots(1, 1, figsize=(15, 5))
-      for j in range(u_matrix.shape[1]):
-        axis.plot(u_matrix[:, j].detach().cpu().numpy(), label=f'{j}')
-      axis.set_title(f'iter {i}')
-      save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_{i}.png')
+    # if i % 10 == 0:
+    #   fig, axis = plt.subplots(1, 1, figsize=(15, 5))
+    #   for j in range(u_matrix.shape[1]):
+    #     axis.plot(u_matrix[:, j].detach().cpu().numpy(), label=f'{j}')
+    #   axis.set_title(f'iter {i}')
+    #   save_fig(f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_{i}.png')
     f_phi_matrix = agent.critic(z_phi_matrix).detach()
     for j in range(n_step):
       loss, loss_ctrl, neglogprior, loss_reg = loss_fn(u_matrix, f_phi_matrix)
@@ -301,14 +301,14 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
 
 
     print(f'iter {i}, loss: {loss.item():.4f}, loss_ctrl: {loss_ctrl.mean().item():.4f}, neglogprior: {neglogprior.item():.4f}, loss_reg: {loss_reg.item():.4f}')
-    fig, axis = plt.subplots(1, 1, figsize=(5, 5))
+    # fig, axis = plt.subplots(1, 1, figsize=(5, 5))
 
   f_phi_matrix = agent.critic(z_phi_matrix).detach()
   print('f_phi_matrix:', f_phi_matrix[0])
 
   root_filename = f'{initial_sample_idx}_{agent.feature_dim}to{phi_dim}_mle_sparse01_grw10'
   if mode == 'train':
-    root_filename = f'{root_filename}_train'
+    root_filename = f'{root_filename}_train1'
   elif mode == 'test':
     root_filename = f'{root_filename}_test'
   # plot_all_u(u_matrix_list, initial_u, save_path=f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/u_matrix_all.png')
@@ -319,20 +319,20 @@ def fit_soft_syllable(args, dataset, agent, mode, initial_sample_idx, train_idx)
   # print('./kms/critic_16_map.pth')
   # agent.critic = agent.critic.to('cpu')
   # u_matrix = u_matrix.to('cpu')
-  average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent, phi_dim)
+  # average_state_ar, average_action_ar = collect_action_to_phi_all(args, dataset, agent, phi_dim)
 
-  pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
-               'initial_state': initial_state.detach().cpu().numpy(), 'initial_task': initial_task.detach().cpu().numpy(),
-               'u_matrix': u_matrix.detach().cpu().numpy()},
-              open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
+  # pickle.dump({'average_state_ar': average_state_ar, 'average_action_ar': average_action_ar,
+  #              'initial_state': initial_state.detach().cpu().numpy(), 'initial_task': initial_task.detach().cpu().numpy(),
+  #              'u_matrix': u_matrix.detach().cpu().numpy()},
+  #             open(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl', 'wb'))
   # print(f'./figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/fit_soft_info.pkl')
   # average_state_ar = average_action_ar = None
   # print('u_matrix:', u_matrix.shape)
   
-  pair_gif_and_u(initial_state.detach().cpu().numpy(), u_matrix.detach().cpu().numpy(), initial_task.detach().cpu().numpy(),
-                 average_state_ar, average_action_ar,
-                 f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/video_{root_filename}.mp4',
-                 dpi=100)
+  # pair_gif_and_u(initial_state.detach().cpu().numpy(), u_matrix.detach().cpu().numpy(), initial_task.detach().cpu().numpy(),
+  #                average_state_ar, average_action_ar,
+  #                f'figure/{args.env}/{args.alg}/{args.dir}/{args.seed}/video_{root_filename}.mp4',
+  #                dpi=100)
   times = 1000
   auc_agents = np.zeros((times, ))
   auc_linears = np.zeros((times, ))
@@ -2520,7 +2520,7 @@ def optimize_action(scale_factor, action, state, task, agent):
 def fit_train_test_opal(args, dataset, agent):
 
   np.random.seed(4)
-  auc_all = open('./kms/auc_average_64nohidden_eluout_1e-4.txt', 'r')
+  auc_all = open('./kms/auc_average.txt', 'r')
   auc_all = auc_all.readlines()
   train_auc_agent = []
   train_auc_linear = []
@@ -2560,14 +2560,14 @@ def fit_train_test_opal(args, dataset, agent):
   for i in range(len(train_auc_agent)):
     train_idx = train_idxs[i]
     print('train_idx:', train_idx)
-    auc_opal_mean, auc_opal_std = fit_latent_opal(args, dataset, agent, mode='train', \
+    auc_opal_mean, auc_opal_std = fit_latent_(args, dataset, agent, mode='train', \
                                   initial_sample_idx=train_idx, train_idx=None)
     train_auc_opal[i] = auc_opal_mean
     print('train_auc_agent:', train_auc_agent[i], 'train_auc_linear:', train_auc_linear[i],
           'train_auc_opal:', train_auc_opal[i])
     test_idx = test_idxs[i]
     print('test_idx:', test_idx)
-    auc_opal_mean, auc_opal_std = fit_latent_opal(args, dataset, agent, mode='test', \
+    auc_opal_mean, auc_opal_std = fit_latent_(args, dataset, agent, mode='test', \
                                   initial_sample_idx=test_idx, train_idx=train_idx)
     test_auc_opal[i] = auc_opal_mean
     print('test_auc_agent:', test_auc_agent[i], 'test_auc_linear:', test_auc_linear[i],
@@ -2577,51 +2577,22 @@ def fit_train_test_opal(args, dataset, agent):
     f.flush()
   f.close()
 
-def fit_latent_opal(args, dataset, agent, mode, initial_sample_idx, train_idx):
+def fit_latent_(args, dataset, agent, mode, initial_sample_idx, train_idx):
   # replay_buffer, state_dim, action_dim, n_task = load_all_keymoseq('test', args.dir, args.device)
   device = 'cuda:0'
-
-  sample_len = 100
-  n_step = 1000
-  cut_seq_len = 10
+  sample_len = 250
   sample_idx = initial_sample_idx + np.arange(sample_len)
   state, action, next_state, reward, done, task, next_task = unpack_batch(dataset.take(sample_idx))
-  if mode == 'train':
-    actor_optimizer = torch.optim.Adam(agent.actor.parameters(), lr=0)
-  elif mode == 'test':
-    agent.actor.load_state_dict(torch.load(f'./kms/opal/actor_{train_idx}.pth'))
-    
-  def loss_fn(state, action):
-    logll = agent.action_loglikelihood(state, action, cut_seq_len)
-    loss = -logll.mean()
-    return loss
-  
-  if mode == 'train':
-    # for i in range(n_step):
-    #   loss = loss_fn(state, action)
-    #   actor_optimizer.zero_grad()
-    #   loss.backward()
-    #   actor_optimizer.step()
-    #   if i%100 == 0:
-    #     print(f'iter {i}, loss: {loss.item():.4f}')
-    torch.save(agent.actor.state_dict(), f'./kms/opal/actor_{initial_sample_idx}.pth')
-
-  root_filename = f'{initial_sample_idx}_{agent.hidden_dim}'
-  if mode == 'train':
-    root_filename = f'{root_filename}_train'
-  elif mode == 'test':
-    root_filename = f'{root_filename}_test'
-
   times = 1000
-  auc_opals = np.zeros((times, ))
+  auc_news = np.zeros((times, ))
   for i in range(times):
-    auc_opal = cal_plot_auc_opal(state, action, dataset, agent, batch_size=sample_len,
+    auc_new = cal_plot_auc_(state, action, dataset, agent, batch_size=sample_len,
                   seed=i, device=device)
-    auc_opals[i] = auc_opal
+    auc_news[i] = auc_new
 
-  return auc_opals.mean(), auc_opals.std()
+  return auc_news.mean(), auc_news.std()
 
-def cal_plot_auc_opal(state, action, dataset, agent, batch_size, seed, device):
+def cal_plot_auc_(state, action, dataset, agent, batch_size, seed, device):
   sample_idx = np.random.randint(0, dataset.size-batch_size)+np.arange(batch_size)
   state_2, action_2, next_state_2, reward_2, done_2, task_2, next_task_2 = unpack_batch(dataset.take(sample_idx))
   action_2 = action_2.to(device)
@@ -2631,6 +2602,40 @@ def cal_plot_auc_opal(state, action, dataset, agent, batch_size, seed, device):
   auc_agent = roc_auc_score(y_agent_true, np.concatenate([pos_logll, neg_logll]))
   return auc_agent
 
+
+def fit_train_test_new(args, dataset, agent):
+
+  np.random.seed(4)
+  auc_all = open('./kms/opal/auc_average.txt', 'r')
+  auc_all_readlines = auc_all.readlines()
+  f_path = f'./kms/{args.alg}/auc_average.txt'
+  f = open(f_path, 'w')
+  for i in range(len(auc_all_readlines)):
+      auc_all_split = auc_all_readlines[i].split()
+      print(auc_all_split)
+      if 'train' in auc_all_split[0]:
+          train_idx = int(auc_all_split[0].split(':')[-1])
+          auc_opal_mean, auc_opal_std = fit_latent_(args, dataset, agent, mode='train', \
+                              initial_sample_idx=train_idx, train_idx=None)
+          f.write(auc_all_readlines[i].split('\n')[0] + f' {auc_opal_mean}\n')
+          f.flush()
+
+      elif 'test' in auc_all_split[0]:
+          test_idx = int(auc_all_split[0].split(':')[-1])
+          auc_opal_mean, auc_opal_std = fit_latent_(args, dataset, agent, mode='test', \
+                                initial_sample_idx=test_idx, train_idx=train_idx)
+          f.write(auc_all_readlines[i].split('\n')[0] + f' {auc_opal_mean}\n')
+          f.flush()
+
+      else:
+          f.write(auc_all_readlines[i])
+          f.flush()
+  f.close()
+
+def n_trainable_param(model):
+    """Count only trainable parameters in a PyTorch model."""
+    print(model.n_param())
+    return
 
 EPS_GREEDY = 0.01
 
@@ -2704,6 +2709,12 @@ if __name__ == "__main__":
     kwargs['lr'] = 1e-3
     kwargs['beta'] = 0.1
     agent = opal_agent.OpalAgent(**kwargs)
+    print(agent.n_param())
+  elif args.alg == 'iql':
+    kwargs['hidden_dim'] = args.feature_dim
+    kwargs['lr'] = 1e-4
+    kwargs['n_task'] = n_task
+    agent = iql_agent.IQLAgent(**kwargs)
   
   # agent.load_phi_mu(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
   agent.load_state_dict(torch.load(f'{save_path}/checkpoint_{args.max_timesteps}.pth'))
@@ -2713,7 +2724,9 @@ if __name__ == "__main__":
   # fit_soft_syllable_batch(args, replay_buffer, agent)
   # fit_soft_syllable(args, replay_buffer, agent, 'train', 68290, None)
   # fit_train_test(args, replay_buffer, agent)
-  fit_train_test_opal(args, replay_buffer, agent)
+  # fit_train_test_opal(args, replay_buffer, agent)
+  fit_train_test_new(args, replay_buffer, agent)
+  # n_trainable_param(agent)
   # fit_whole_dataset(args, replay_buffer, agent)
   # pair_gif_and_u(None, None, None, None, None, None)
   # perturb_action(args, replay_buffer, agent)

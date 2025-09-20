@@ -70,7 +70,7 @@ class OpalAgent(SACAgent):
             nn.Linear(hidden_dim, hidden_dim)).to(self.device)
         self.rnn = nn.GRU(input_size=hidden_dim+action_dim,
                               hidden_size=hidden_dim,
-                              num_layers=4,
+                              num_layers=1,
                               batch_first=True,
                               bidirectional=True,
                               ).to(self.device)
@@ -79,7 +79,7 @@ class OpalAgent(SACAgent):
                                                  
 			log_std_bounds=[-5., 2.], ).to(self.device)
         self.prior_encoder = DiagGaussianEncoder(obs_dim=state_dim, action_dim=hidden_dim,
-                                                    hidden_dim=hidden_dim, hidden_depth=2,
+                                                    hidden_dim=hidden_dim, hidden_depth=1,
 			log_std_bounds=[-5., 2.], ).to(self.device)
         self.actor = DiagGaussianEncoder(obs_dim=hidden_dim+state_dim, action_dim=action_dim, 
                                         hidden_dim=hidden_dim, hidden_depth=2,
@@ -175,3 +175,8 @@ class OpalAgent(SACAgent):
         self.prior_encoder.load_state_dict(state_dict['prior_encoder'])
         self.actor.load_state_dict(state_dict['actor'])
         self.log_alpha = state_dict['log_alpha']
+    
+    def n_param(self):
+        modules = [self.rnn, self.latent_encoder, self.prior_encoder, self.actor]
+        n = sum(p.numel() for m in modules for p in m.parameters() if p.requires_grad)
+        return n

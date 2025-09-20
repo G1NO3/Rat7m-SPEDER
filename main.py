@@ -12,7 +12,7 @@ from agent.sac import sac_agent
 from agent.vlsac import vlsac_agent
 from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
-from agent.spedersac import spedersac_agent
+from agent.spedersac import spedersac_agent, iql_agent
 from agent.opal import opal_agent
 from utils.util import unpack_batch
 
@@ -132,8 +132,8 @@ if __name__ == "__main__":
   if not os.path.exists(save_path):
     os.makedirs(save_path)
   # set seeds
-  torch.manual_seed(args.seed+2)
-  np.random.seed(args.seed+2)
+  torch.manual_seed(args.seed+100)
+  np.random.seed(args.seed+102)
 
   # 
   # state_dim = env.observation_space.shape[0]
@@ -193,9 +193,14 @@ if __name__ == "__main__":
     agent = spedersac_agent.ValueDICEAgent(**kwargs)
   elif args.alg == 'opal':
     kwargs['hidden_dim'] = args.feature_dim
-    kwargs['lr'] = 1e-4
+    kwargs['lr'] = 1e-3
     kwargs['beta'] = 0.1
     agent = opal_agent.OpalAgent(**kwargs)
+  elif args.alg == 'iql':
+    kwargs['hidden_dim'] = args.feature_dim
+    kwargs['lr'] = 1e-3
+    kwargs['n_task'] = n_task
+    agent = iql_agent.IQLAgent(**kwargs)
 
   args_kwargs = {'args': vars(args), 'kwargs': kwargs}
   np.save(os.path.join(save_path, 'args_kwargs.npy'), args_kwargs)
@@ -235,7 +240,7 @@ if __name__ == "__main__":
   for t in range(int(args.max_timesteps)):
     
     episode_timesteps += 1
-    info = agent.train(expert_buffer, batch_size=args.batch_size, seq_len=10)
+    info = agent.train(expert_buffer, batch_size=args.batch_size)
     # expert_batch = expert_buffer.sample(args.batch_size)
     # state, action, next_state, reward, done, task, next_task = unpack_batch(expert_batch)
     # policy_action = agent.actor.select_action(state)

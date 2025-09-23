@@ -138,6 +138,20 @@ class OpalAgent(SACAgent):
             'kl_loss': kl_loss.item()
         }
     
+    def trajectory_latent(self, state, action, cut_seq_len=10):
+        B = state.shape[0] // cut_seq_len
+        T = cut_seq_len
+        state_1 = state.reshape(B, T, self.state_dim)
+        action_1 = action.reshape(B, T, self.action_dim)
+        processed_state = self.state_processor(state_1.reshape(B*T, self.state_dim)).reshape(B, T, -1)
+        rnn_input = torch.concat([state_1, action_1], dim=-1)
+        rnn_latent, _ = self.rnn(rnn_input)
+        assert rnn_latent.shape == (B, T, 2*self.hidden_dim)
+        latent_dist = self.latent_encoder(rnn_latent.mean(dim=1))
+        z = latent_dist.rsample()
+        assert z.shape == (B, self.hidden_dim)
+        return z.unsqueeze(1).repeat(1, T, 1).reshape(B*T, self.hidden_dim)
+
     def action_loglikelihood(self, state, action, cut_seq_len=10):
         B = state.shape[0] // cut_seq_len
         T = cut_seq_len
@@ -157,7 +171,13 @@ class OpalAgent(SACAgent):
         action = action_1.reshape(B*T, self.action_dim)
         log_prob = actor_dist.log_prob(action).reshape(B, T, self.action_dim).sum(-1).reshape(-1)
         return log_prob
-
+    def action_loglikelihood_z(self, state, action, z, cut_seq_len=10):
+        actor_input = torch.concat([z, state], dim=-1)
+        actor_dist = self.actor(actor_input)
+        assert actor_dist.mean.shape == (state.shape[0], self.action_dim)
+        action = action.reshape(state.shape[0], self.action_dim)
+        log_prob = actor_dist.log_prob(action).reshape(state.shape[0], self.action_dim).sum(-1).reshape(-1)
+        return log_prob
     def state_dict(self):
         return {
             'state_processor': self.state_processor.state_dict(),

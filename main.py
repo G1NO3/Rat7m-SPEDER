@@ -14,6 +14,7 @@ from agent.ctrlsac import ctrlsac_agent
 from agent.diffsrsac import diffsrsac_agent
 from agent.spedersac import spedersac_agent, iql_agent
 from agent.opal import opal_agent
+from agent.hilp import hilp_agent
 from utils.util import unpack_batch
 
 def load_all_keymoseq(category, directory, device='cuda:0'):
@@ -198,9 +199,17 @@ if __name__ == "__main__":
     agent = opal_agent.OpalAgent(**kwargs)
   elif args.alg == 'iql':
     kwargs['hidden_dim'] = args.feature_dim
-    kwargs['lr'] = 1e-3
+    kwargs['lr'] = 1e-4
     kwargs['n_task'] = n_task
     agent = iql_agent.IQLAgent(**kwargs)
+  elif args.alg == 'hilp':
+    kwargs['hidden_dim'] = args.feature_dim
+    kwargs['lr'] = 1e-4
+    kwargs['seq_len'] = 10
+    kwargs['batch_size'] = 64
+    agent = hilp_agent.HILPAgent(**kwargs)
+    print('Number of parameters:', agent.n_params())
+
 
   args_kwargs = {'args': vars(args), 'kwargs': kwargs}
   np.save(os.path.join(save_path, 'args_kwargs.npy'), args_kwargs)
@@ -240,7 +249,7 @@ if __name__ == "__main__":
   for t in range(int(args.max_timesteps)):
     
     episode_timesteps += 1
-    info = agent.train(expert_buffer, batch_size=args.batch_size)
+    info = agent.train(expert_buffer, batch_size=args.batch_size, seq_len=kwargs['seq_len'])
     # expert_batch = expert_buffer.sample(args.batch_size)
     # state, action, next_state, reward, done, task, next_task = unpack_batch(expert_batch)
     # policy_action = agent.actor.select_action(state)
